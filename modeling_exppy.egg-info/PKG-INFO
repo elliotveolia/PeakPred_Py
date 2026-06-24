@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: modeling_exppy
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.14
+Description-Content-Type: text/markdown
+Requires-Dist: ice-data-py
+Requires-Dist: polars>=1.40.1
+Requires-Dist: storage-expy
+Requires-Dist: datetime>=6.0
+Requires-Dist: plotly>=6.6.0
+Requires-Dist: scikit-learn>=1.9.0

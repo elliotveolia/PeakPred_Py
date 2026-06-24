@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modeling_exppy"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "ice-data-py",
+    "polars>=1.40.1",
+    "storage-expy",
+    "datetime>=6.0",
+    "plotly>=6.6.0",
+    "scikit-learn>=1.9.0",
+]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["helpers*", "Sites*, ICE*, rate_classes*"]
+
+[tool.uv.sources]
+storage-expy = { git = "ssh://git@github.com/Iceteccom/Storage_ExPy.git" }
+ice-data-py = { git = "ssh://git@github.com/Iceteccom/ice_data_py.git" }

@@ -1,0 +1,6 @@
+ice-data-py
+polars>=1.40.1
+storage-expy
+datetime>=6.0
+plotly>=6.6.0
+scikit-learn>=1.9.0
