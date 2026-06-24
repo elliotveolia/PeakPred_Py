@@ -291,7 +291,8 @@ def create_load_distribution_figure(df, year_months, zones=None, output_file="lo
     return fig
 
 
-def create_load_profile_figure_percent(df, year_months, zones=None, percentile_data=None, output_file="load_profile_percentiles.html"):
+def create_load_profile_figure_percent(df, year_months, zones=None, percentile_data=None,
+                                       output_file="load_profile_percentiles.html"):
     """
     Create an interactive load profile figure with month/year dropdown selector.
 
@@ -303,11 +304,11 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
         Sorted list of year-month strings (e.g., ["2024-06", "2024-07"])
     zones : list, optional
         List of zone names. Default: ["Connecticut", "Western Mass", "New Hampshire", "Total (NH+CT+WMass)"]
-    percentile_data : dict, optional
-        Dictionary with structure: {year_month: {zone: {percentile: value}}}
-        Generated from calculate_percentiles() function
+    percentile_data : pl.DataFrame, optional
+        DataFrame with columns: month, zone, p90, p95, p97_5, p99
+        Generated from calculate_percentiles_by_month_df() function
     output_file : str, optional
-        Path to save HTML file. Default: "load_profile.html"
+        Path to save HTML file. Default: "load_profile_percentiles.html"
 
     Returns:
     --------
@@ -353,44 +354,50 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
     annotations_by_month = {ym: [] for ym in year_months}
 
     if percentile_data is not None and isinstance(percentile_data, pl.DataFrame):
-        for row in percentile_data.iter_rows(named=True):
-            year_month = row['year_month']
-            zone = row['zone']
+        # Extract month from year_month for lookup
+        for year_month in year_months:
+            month = year_month.split("-")[1]  # Extract "06" from "2024-06"
 
-            # Add shapes for each percentile
-            for percentile, col_name in [(90, 'p90'), (95, 'p95'), (97.5, 'p97_5'), (99, 'p99')]:
-                value = row[col_name]
+            # Filter percentile data for this month
+            month_percentiles = percentile_data.filter(pl.col("month") == month)
 
-                if value is not None:
-                    shapes_by_month[year_month].append(
-                        dict(
-                            type="line",
-                            x0=0,
-                            x1=1,
-                            y0=value,
-                            y1=value,
-                            xref="paper",
-                            yref="y",
-                            line=dict(
-                                color=percentile_colors.get(percentile, "gray"),
-                                width=2,
-                                dash="dash"
+            for row in month_percentiles.iter_rows(named=True):
+                zone = row['zone']
+
+                # Add shapes for each percentile
+                for percentile, col_name in [(90, 'p90'), (95, 'p95'), (97.5, 'p97_5'), (99, 'p99')]:
+                    value = row[col_name]
+
+                    if value is not None:
+                        shapes_by_month[year_month].append(
+                            dict(
+                                type="line",
+                                x0=0,
+                                x1=1,
+                                y0=value,
+                                y1=value,
+                                xref="paper",
+                                yref="y",
+                                line=dict(
+                                    color=percentile_colors.get(percentile, "gray"),
+                                    width=2,
+                                    dash="dash"
+                                )
                             )
                         )
-                    )
 
-                    annotations_by_month[year_month].append(
-                        dict(
-                            x=1.01,
-                            y=value,
-                            text=f"{zone} {percentile}th: {value:.0f}",
-                            showarrow=False,
-                            xref="paper",
-                            yref="y",
-                            xanchor="left",
-                            font=dict(size=8, color=percentile_colors.get(percentile, "gray"))
+                        annotations_by_month[year_month].append(
+                            dict(
+                                x=1.01,
+                                y=value,
+                                text=f"{zone} {percentile}th: {value:.0f}",
+                                showarrow=False,
+                                xref="paper",
+                                yref="y",
+                                xanchor="left",
+                                font=dict(size=8, color=percentile_colors.get(percentile, "gray"))
+                            )
                         )
-                    )
 
     # Set initial shapes and annotations for first month
     fig.update_layout(

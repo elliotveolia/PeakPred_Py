@@ -30,8 +30,16 @@ def calculate_percentiles_df(df, year_months, zones=None, percentiles=None):
 
     data = []
 
-    for year_month in year_months:
-        month_data = df.filter(pl.col("year_month") == year_month)
+    # Extract unique months (01-12) from all year_months
+    df_with_month = df.with_columns(
+        pl.col("year_month").str.split("-").list.get(1).alias("month")
+    )
+
+    unique_months = sorted(df_with_month.select("month").unique().to_series().to_list())
+
+    # For each month, calculate percentiles across all years
+    for month in unique_months:
+        month_data = df_with_month.filter(pl.col("month") == month)
 
         for zone in zones:
             zone_data = month_data.filter(pl.col("zone") == zone).select("value").to_series()
@@ -42,7 +50,7 @@ def calculate_percentiles_df(df, year_months, zones=None, percentiles=None):
             zone_data_np = zone_data_np[np.isfinite(zone_data_np)]
 
             if len(zone_data_np) > 0:
-                row = {"year_month": year_month, "zone": zone}
+                row = {"month": month, "zone": zone}
                 for percentile in percentiles:
                     col_name = f"p{percentile}".replace(".", "_")
                     row[col_name] = np.percentile(zone_data_np, percentile)
