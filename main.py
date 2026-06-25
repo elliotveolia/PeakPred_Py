@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 #######################################################################################################################
 
 # Define start and end time
-t1 = datetime(2024, 6, 1, 0)
+t1 = datetime(2021, 6, 1, 0)
 t2 = datetime(2026, 6, 1, 23)
 
 print("=" * 70)
@@ -94,13 +94,15 @@ for ym in year_months:
 # Usage - with combined zone
 zones = ["Connecticut", "Western Mass", "New Hampshire", "Total (NH+CT+WMass)"]
 
-#fig = create_load_profile_figure(df, year_months, zones=zones)
-#fig.show()
+fig = create_load_profile_figure(df, year_months, zones=zones)
+fig.show()
+
+fig = create_load_distribution_figure(df, year_months,)
+fig.show()
 
 percentile_df = calculate_percentiles_df(df, year_months)
 
 fig = create_load_profile_figure_percent(df, year_months, percentile_data=percentile_df)
 fig.show()
 
-#fig_dist = create_load_distribution_figure(df, year_months, zones=zones)
-#fig_dist.show()
+

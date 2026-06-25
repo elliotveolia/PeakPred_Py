@@ -310,12 +310,15 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
     timestamp_col = df.columns[0]
 
     # Extract unique months and add day/hour columns
+    # Convert to UTC first to get consistent hour values
     df_with_month = df.with_columns(
-        pl.col("year_month").str.split("-").list.get(0).alias("year"),  # Extract year
+        pl.col(timestamp_col).dt.convert_time_zone("UTC").alias("tstamp_utc")
+    ).with_columns(
+        pl.col("year_month").str.split("-").list.get(0).alias("year"),
         pl.col("year_month").str.split("-").list.get(1).alias("month"),
-        pl.col(timestamp_col).dt.day().alias("day"),
-        pl.col(timestamp_col).dt.hour().alias("hour"),
-        (pl.col(timestamp_col).dt.day() + pl.col(timestamp_col).dt.hour() / 24).alias("day_hour")
+        pl.col("tstamp_utc").dt.day().alias("day"),
+        pl.col("tstamp_utc").dt.hour().alias("hour"),
+        (pl.col("tstamp_utc").dt.day() + pl.col("tstamp_utc").dt.hour() / 24).alias("day_hour")
     )
 
     unique_months = sorted(df_with_month.select("month").unique().to_series().to_list())
@@ -338,7 +341,7 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
     )
 
     # Store trace info for visibility management
-    trace_info = []  # List of (month, zone, year, is_percentile, percentile_value)
+    trace_info = []
 
     # Create traces for each month, year, and zone
     for month in unique_months:
@@ -348,17 +351,25 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
             row = (zone_idx - 1) // 2 + 1
             col = (zone_idx - 1) % 2 + 1
 
-            zone_data = month_data.filter(pl.col("zone") == zone).sort(timestamp_col)
+            zone_data = month_data.filter(pl.col("zone") == zone)
 
             # Group by year and add separate trace for each year
             for year in unique_years:
-                year_zone_data = zone_data.filter(pl.col("year") == year)
+                year_zone_data = (zone_data
+                                  .filter(pl.col("year") == year)
+                                  .filter(pl.col("value").is_not_null())
+                                  .sort(timestamp_col)
+                                  .unique(subset=[timestamp_col], keep="first")
+                                  )
 
-                if len(year_zone_data) > 0:  # Only add if data exists
+                if len(year_zone_data) > 0:
+                    x_vals = year_zone_data.select("day_hour").to_series().to_list()
+                    y_vals = year_zone_data.select("value").to_series().to_list()
+
                     fig.add_trace(
                         go.Scatter(
-                            x=year_zone_data.select("day_hour").to_series(),
-                            y=year_zone_data.select("value").to_series(),
+                            x=x_vals,
+                            y=y_vals,
                             mode="lines",
                             name=f"{year}",
                             visible=(month == unique_months[0]),
@@ -380,7 +391,7 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
         if len(day_hour_values) > 0:
             x_ranges[month] = (day_hour_values.min(), day_hour_values.max())
 
-    # Add percentile lines as traces (not hlines) for ALL months
+    # Add percentile lines as traces
     if percentile_data is not None and isinstance(percentile_data, pl.DataFrame):
         for month in unique_months:
             month_percentiles = percentile_data.filter(pl.col("month") == month)
@@ -392,11 +403,10 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
                 row = (zone_idx - 1) // 2 + 1
                 col = (zone_idx - 1) % 2 + 1
 
-                # Add traces for each percentile
                 for percentile, col_name in [(90, 'p90'), (95, 'p95'), (97.5, 'p97_5'), (99, 'p99')]:
                     value = row_data[col_name]
 
-                    if value is not None:
+                    if value is not None and not (isinstance(value, float) and (value != value)):
                         fig.add_trace(
                             go.Scatter(
                                 x=[x_min, x_max],
@@ -422,13 +432,11 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
                    "July", "August", "September", "October", "November", "December"]
 
     for selected_month in unique_months:
-        # Create visibility list based on trace_info
         visibility = [
-            (info[0] == selected_month)  # Show if trace's month matches selected month
+            (info[0] == selected_month)
             for info in trace_info
         ]
 
-        # Convert month number to name
         month_name = month_names[int(selected_month) - 1]
 
         buttons.append(
