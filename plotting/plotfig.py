@@ -489,3 +489,495 @@ def create_load_profile_figure_percent(df, year_months, zones=None, percentile_d
     fig.write_html(output_file)
 
     return fig
+
+
+def create_load_percentile_figure(df, year_months, zones=None, percentile_data=None,
+                                       output_file="load_percentiles.html",
+                                       percentile_type="average"):
+    """
+    Create an interactive load profile figure with month selector showing all years for that month.
+    Shows 4 separate subplots, one for each zone.
+    X-axis shows day and hour of month.
+    Each year appears in a different colour.
+    Percentile lines show average or median values across years.
+
+    Parameters:
+    -----------
+    df : pl.DataFrame
+        Load data with timestamp, value, zone, year_month columns
+    year_months : list
+        List of year-month strings
+    zones : list, optional
+        List of zone names
+    percentile_data : pl.DataFrame, optional
+        DataFrame with columns: month, zone, percentile, average, median
+    output_file : str
+        Output HTML file path
+    percentile_type : str
+        Either "average" or "median" - which value to display for percentile lines
+    """
+
+    if zones is None:
+        zones = ["Connecticut", "Western Mass", "New Hampshire", "Total (NH+CT+WMass)"]
+
+    if percentile_type not in ["average", "median"]:
+        raise ValueError("percentile_type must be 'average' or 'median'")
+
+    # Define percentile colors
+    percentile_colors = {90: "green", 95: "blue", 97.5: "orange", 99: "red"}
+
+    # Get the actual timestamp column name (first column)
+    timestamp_col = df.columns[0]
+
+    # Extract unique months and add day/hour columns
+    # Convert to UTC first to get consistent hour values
+    df_with_month = df.with_columns(
+        pl.col(timestamp_col).dt.convert_time_zone("UTC").alias("tstamp_utc")
+    ).with_columns(
+        pl.col("year_month").str.split("-").list.get(0).alias("year"),
+        pl.col("year_month").str.split("-").list.get(1).alias("month"),
+        pl.col("tstamp_utc").dt.day().alias("day"),
+        pl.col("tstamp_utc").dt.hour().alias("hour"),
+        (pl.col("tstamp_utc").dt.day() + pl.col("tstamp_utc").dt.hour() / 24).alias("day_hour")
+    )
+
+    unique_months = sorted(df_with_month.select("month").unique().to_series().to_list())
+    unique_years = sorted(df_with_month.select("year").unique().to_series().to_list())
+
+    # Create a color palette for years
+    colors = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5"
+    ]
+    year_colors = {year: colors[i % len(colors)] for i, year in enumerate(unique_years)}
+
+    # Create figure with subplots (2x2 grid)
+    fig = sp.make_subplots(
+        rows=2, cols=2,
+        subplot_titles=zones,
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}]]
+    )
+
+    # Store trace info for visibility management
+    trace_info = []
+
+    # Create traces for each month, year, and zone
+    for month in unique_months:
+        month_data = df_with_month.filter(pl.col("month") == month)
+
+        for zone_idx, zone in enumerate(zones, 1):
+            row = (zone_idx - 1) // 2 + 1
+            col = (zone_idx - 1) % 2 + 1
+
+            zone_data = month_data.filter(pl.col("zone") == zone)
+
+            # Group by year and add separate trace for each year
+            for year in unique_years:
+                year_zone_data = (zone_data
+                                  .filter(pl.col("year") == year)
+                                  .filter(pl.col("value").is_not_null())
+                                  .sort(timestamp_col)
+                                  .unique(subset=[timestamp_col], keep="first")
+                                  )
+
+                if len(year_zone_data) > 0:
+                    x_vals = year_zone_data.select("day_hour").to_series().to_list()
+                    y_vals = year_zone_data.select("value").to_series().to_list()
+
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_vals,
+                            y=y_vals,
+                            mode="lines",
+                            name=f"{year}",
+                            visible=(month == unique_months[0]),
+                            line=dict(color=year_colors[year]),
+                            hovertemplate=f"<b>{zone} ({year})</b><br>Day: %{{customdata[0]}}, Hour: %{{customdata[1]}}<br>Load: %{{y:.2f}} MW<extra></extra>",
+                            customdata=year_zone_data.select(["day", "hour"]).to_numpy(),
+                            legendgroup=f"{year}",
+                            showlegend=(zone_idx == 1),
+                        ),
+                        row=row, col=col
+                    )
+                    trace_info.append((month, zone, year, False, None))
+
+    # Get x-axis range for each month
+    x_ranges = {}
+    for month in unique_months:
+        month_data = df_with_month.filter(pl.col("month") == month)
+        day_hour_values = month_data.select("day_hour").to_series()
+        if len(day_hour_values) > 0:
+            x_ranges[month] = (day_hour_values.min(), day_hour_values.max())
+
+    # Add percentile lines as traces
+    if percentile_data is not None and isinstance(percentile_data, pl.DataFrame):
+        for month in unique_months:
+            month_percentiles = percentile_data.filter(pl.col("month") == month)
+            x_min, x_max = x_ranges.get(month, (1, 31))
+
+            for row_data in month_percentiles.iter_rows(named=True):
+                zone = row_data['zone']
+                percentile_str = row_data['percentile']
+
+                # Convert percentile string to float
+                percentile = float(percentile_str)
+
+                zone_idx = zones.index(zone) + 1
+                row = (zone_idx - 1) // 2 + 1
+                col = (zone_idx - 1) % 2 + 1
+
+                # Get the value based on percentile_type
+                value = row_data[percentile_type]
+
+                if value is not None and not (isinstance(value, float) and (value != value)):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[x_min, x_max],
+                            y=[value, value],
+                            mode="lines",
+                            name=f"{percentile_str}th",
+                            visible=(month == unique_months[0]),
+                            line=dict(
+                                color=percentile_colors.get(percentile, "gray"),
+                                width=2,
+                                dash="dash"
+                            ),
+                            hovertemplate=f"{percentile_str}th ({percentile_type}): {value:.0f}<extra></extra>",
+                            showlegend=False,
+                        ),
+                        row=row, col=col
+                    )
+                    trace_info.append((month, zone, None, True, percentile))
+
+    # Create buttons for month selection
+    buttons = []
+    month_names = ["January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+
+    for selected_month in unique_months:
+        visibility = [
+            (info[0] == selected_month)
+            for info in trace_info
+        ]
+
+        month_name = month_names[int(selected_month) - 1]
+
+        buttons.append(
+            dict(
+                label=month_name,
+                method="update",
+                args=[
+                    {
+                        "visible": visibility,
+                    },
+                    {
+                        "title": f"Load Profile - {month_name} (All Years)"
+                    }
+                ]
+            )
+        )
+
+    # Update layout with dropdown
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                buttons=buttons,
+                direction="down",
+                pad={"r": 10, "t": 10},
+                showactive=True,
+                x=0.0,
+                xanchor="left",
+                y=1.15,
+                yanchor="top"
+            )
+        ],
+        title=f"Load Profile - {month_names[int(unique_months[0]) - 1]} (All Years) - {percentile_type.capitalize()} Percentiles",
+        height=1000,
+        template="plotly_white",
+        showlegend=True,
+        hovermode="closest",
+        legend=dict(
+            x=1.02,
+            y=1,
+            xanchor="left",
+            yanchor="top"
+        )
+    )
+
+    # Update all x and y axes
+    fig.update_xaxes(title_text="Day of Month (with Hour)")
+    fig.update_yaxes(title_text="Load (MW)")
+
+    # Save as HTML
+    fig.write_html(output_file)
+
+    return fig
+
+
+def create_load_profile_figure_minmax(df, year_months, zones=None, minmax_data=None,
+                                      output_file="load_profile_minmax.html"):
+    """
+    Create an interactive load profile figure with month selector showing all years for that month.
+    Shows 4 separate subplots, one for each zone.
+    X-axis shows day and hour of month.
+    Each year appears in a different colour.
+    Min, max, and average load lines are displayed as reference.
+
+    Parameters:
+    -----------
+    df : pl.DataFrame
+        Load data with timestamp, value, zone, year_month columns
+    year_months : list
+        List of year-month strings
+    zones : list, optional
+        List of zone names
+    minmax_data : pl.DataFrame, optional
+        DataFrame with columns: month, zone, avg_max, avg_min, avg_avg
+    output_file : str
+        Output HTML file path
+    """
+
+    if zones is None:
+        zones = ["Connecticut", "Western Mass", "New Hampshire", "Total (NH+CT+WMass)"]
+
+    # Define line colors and styles
+    line_colors = {
+        "max": "#d62728",  # Red
+        "avg": "#1f77b4",  # Blue
+        "min": "#2ca02c"  # Green
+    }
+
+    # Get the actual timestamp column name (first column)
+    timestamp_col = df.columns[0]
+
+    # Extract unique months and add day/hour columns
+    # Convert to UTC first to get consistent hour values
+    df_with_month = df.with_columns(
+        pl.col(timestamp_col).dt.convert_time_zone("UTC").alias("tstamp_utc")
+    ).with_columns(
+        pl.col("year_month").str.split("-").list.get(0).alias("year"),
+        pl.col("year_month").str.split("-").list.get(1).alias("month"),
+        pl.col("tstamp_utc").dt.day().alias("day"),
+        pl.col("tstamp_utc").dt.hour().alias("hour"),
+        (pl.col("tstamp_utc").dt.day() + pl.col("tstamp_utc").dt.hour() / 24).alias("day_hour")
+    )
+
+    unique_months = sorted(df_with_month.select("month").unique().to_series().to_list())
+    unique_years = sorted(df_with_month.select("year").unique().to_series().to_list())
+
+    # Create a color palette for years
+    colors = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5"
+    ]
+    year_colors = {year: colors[i % len(colors)] for i, year in enumerate(unique_years)}
+
+    # Create figure with subplots (2x2 grid)
+    fig = sp.make_subplots(
+        rows=2, cols=2,
+        subplot_titles=zones,
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}]]
+    )
+
+    # Store trace info for visibility management
+    trace_info = []
+
+    # Create traces for each month, year, and zone
+    for month in unique_months:
+        month_data = df_with_month.filter(pl.col("month") == month)
+
+        for zone_idx, zone in enumerate(zones, 1):
+            row = (zone_idx - 1) // 2 + 1
+            col = (zone_idx - 1) % 2 + 1
+
+            zone_data = month_data.filter(pl.col("zone") == zone)
+
+            # Group by year and add separate trace for each year
+            for year in unique_years:
+                year_zone_data = (zone_data
+                                  .filter(pl.col("year") == year)
+                                  .filter(pl.col("value").is_not_null())
+                                  .sort(timestamp_col)
+                                  .unique(subset=[timestamp_col], keep="first")
+                                  )
+
+                if len(year_zone_data) > 0:
+                    x_vals = year_zone_data.select("day_hour").to_series().to_list()
+                    y_vals = year_zone_data.select("value").to_series().to_list()
+
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_vals,
+                            y=y_vals,
+                            mode="lines",
+                            name=f"{year}",
+                            visible=(month == unique_months[0]),
+                            line=dict(color=year_colors[year], width=1),
+                            hovertemplate=f"<b>{zone} ({year})</b><br>Day: %{{customdata[0]}}, Hour: %{{customdata[1]}}<br>Load: %{{y:.2f}} MW<extra></extra>",
+                            customdata=year_zone_data.select(["day", "hour"]).to_numpy(),
+                            legendgroup=f"{year}",
+                            showlegend=(zone_idx == 1),
+                        ),
+                        row=row, col=col
+                    )
+                    trace_info.append((month, zone, year, False, None, None))
+
+    # Get x-axis range for each month
+    x_ranges = {}
+    for month in unique_months:
+        month_data = df_with_month.filter(pl.col("month") == month)
+        day_hour_values = month_data.select("day_hour").to_series()
+        if len(day_hour_values) > 0:
+            x_ranges[month] = (day_hour_values.min(), day_hour_values.max())
+
+    # Add min/max/average lines as traces
+    if minmax_data is not None and isinstance(minmax_data, pl.DataFrame):
+        for month in unique_months:
+            month_minmax = minmax_data.filter(pl.col("month") == month)
+            x_min, x_max = x_ranges.get(month, (1, 31))
+
+            for row_data in month_minmax.iter_rows(named=True):
+                zone = row_data['zone']
+                zone_idx = zones.index(zone) + 1
+                row = (zone_idx - 1) // 2 + 1
+                col = (zone_idx - 1) % 2 + 1
+
+                # Add max load line (using avg_max column)
+                avg_max = row_data['avg_max']
+                if avg_max is not None and not (isinstance(avg_max, float) and (avg_max != avg_max)):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[x_min, x_max],
+                            y=[avg_max, avg_max],
+                            mode="lines",
+                            name="Avg Max",
+                            visible=(month == unique_months[0]),
+                            line=dict(
+                                color=line_colors["max"],
+                                width=2,
+                                dash="dash"
+                            ),
+                            hovertemplate=f"Avg Max: {avg_max:.0f} MW<extra></extra>",
+                            showlegend=(zone_idx == 1),
+                            legendgroup="avg_max"
+                        ),
+                        row=row, col=col
+                    )
+                    trace_info.append((month, zone, None, True, "avg_max", avg_max))
+
+                # Add average load line (using avg_avg column)
+                avg_avg = row_data['avg_avg']
+                if avg_avg is not None and not (isinstance(avg_avg, float) and (avg_avg != avg_avg)):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[x_min, x_max],
+                            y=[avg_avg, avg_avg],
+                            mode="lines",
+                            name="Avg Load",
+                            visible=(month == unique_months[0]),
+                            line=dict(
+                                color=line_colors["avg"],
+                                width=2,
+                                dash="dot"
+                            ),
+                            hovertemplate=f"Avg Load: {avg_avg:.0f} MW<extra></extra>",
+                            showlegend=(zone_idx == 1),
+                            legendgroup="avg_avg"
+                        ),
+                        row=row, col=col
+                    )
+                    trace_info.append((month, zone, None, True, "avg_avg", avg_avg))
+
+                # Add min load line (using avg_min column)
+                avg_min = row_data['avg_min']
+                if avg_min is not None and not (isinstance(avg_min, float) and (avg_min != avg_min)):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[x_min, x_max],
+                            y=[avg_min, avg_min],
+                            mode="lines",
+                            name="Avg Min",
+                            visible=(month == unique_months[0]),
+                            line=dict(
+                                color=line_colors["min"],
+                                width=2,
+                                dash="dashdot"
+                            ),
+                            hovertemplate=f"Avg Min: {avg_min:.0f} MW<extra></extra>",
+                            showlegend=(zone_idx == 1),
+                            legendgroup="avg_min"
+                        ),
+                        row=row, col=col
+                    )
+                    trace_info.append((month, zone, None, True, "avg_min", avg_min))
+
+    # Create buttons for month selection
+    buttons = []
+    month_names = ["January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+
+    for selected_month in unique_months:
+        visibility = [
+            (info[0] == selected_month)
+            for info in trace_info
+        ]
+
+        month_name = month_names[int(selected_month) - 1]
+
+        buttons.append(
+            dict(
+                label=month_name,
+                method="update",
+                args=[
+                    {
+                        "visible": visibility,
+                    },
+                    {
+                        "title": f"Load Profile - {month_name} (All Years)"
+                    }
+                ]
+            )
+        )
+
+    # Update layout with dropdown
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                buttons=buttons,
+                direction="down",
+                pad={"r": 10, "t": 10},
+                showactive=True,
+                x=0.0,
+                xanchor="left",
+                y=1.15,
+                yanchor="top"
+            )
+        ],
+        title=f"Load Profile - {month_names[int(unique_months[0]) - 1]} (All Years)",
+        height=1000,
+        template="plotly_white",
+        showlegend=True,
+        hovermode="closest",
+        legend=dict(
+            x=1.02,
+            y=1,
+            xanchor="left",
+            yanchor="top",
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="rgba(0, 0, 0, 0.2)",
+            borderwidth=1
+        )
+    )
+
+    # Update all x and y axes
+    fig.update_xaxes(title_text="Day of Month (with Hour)")
+    fig.update_yaxes(title_text="Load (MW)")
+
+    # Save as HTML
+    fig.write_html(output_file)
+
+    return fig

@@ -10,8 +10,11 @@ import plotly.subplots as sp
 
 from ice_data_py import cds, hist3
 from datetime import datetime
-from plotting.plotfig import create_load_profile_figure, create_load_distribution_figure, create_load_profile_figure_percent
-from functions import calculate_percentiles_df
+
+from scipy.constants import year
+
+import plotting.plotfig as plot
+import functions as funct
 import plotly.graph_objects as go
 
 #######################################################################################################################
@@ -94,15 +97,45 @@ for ym in year_months:
 # Usage - with combined zone
 zones = ["Connecticut", "Western Mass", "New Hampshire", "Total (NH+CT+WMass)"]
 
-fig = create_load_profile_figure(df, year_months, zones=zones)
-fig.show()
+#fig = create_load_profile_figure(df, year_months, zones=zones)
+#fig.show()
 
-fig = create_load_distribution_figure(df, year_months,)
-fig.show()
+#fig = create_load_distribution_figure(df, year_months,)
+#fig.show()
 
-percentile_df = calculate_percentiles_df(df, year_months)
+percentile_months = funct.calculate_percentiles_months(df, year_months)
 
-fig = create_load_profile_figure_percent(df, year_months, percentile_data=percentile_df)
-fig.show()
+#fig = create_load_profile_figure_percent(df, year_months, percentile_data=percentile_months)
+#fig.show()
 
+percentile_years = funct.calculate_percentiles_years(df, year_months)
+
+aggregate_percentiles = funct.aggregate_percentiles_by_month(percentile_years)
+
+#fig_avg = create_load_percentile_figure(
+#    df,
+#    year_months,
+#    percentile_data=aggregate_percentiles,
+#    output_file="load_profile_average.html",
+#    percentile_type="average"
+#)
+
+#fig_avg = create_load_percentile_figure(
+#    df,
+#    year_months,
+#    percentile_data=aggregate_percentiles,
+#    output_file="load_profile_median.html",
+#    percentile_type="median"
+#)
+
+monthly_stats = funct.get_monthly_avg_of_daily_extremes(df, year_months)
+print(monthly_stats)
+
+
+fig = plot.create_load_profile_figure_minmax(
+    df=df,
+    year_months=year_months,
+    minmax_data=monthly_stats,
+    output_file="load_profile_minmax.html"
+)
 
