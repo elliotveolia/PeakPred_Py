@@ -1,4 +1,5 @@
 import polars as pl
+import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.subplots as sp
@@ -716,209 +717,194 @@ def create_load_percentile_figure(df, year_months, zones=None, percentile_data=N
     return fig
 
 
-def create_load_profile_figure_minmax(df, year_months, zones=None, minmax_data=None,
-                                      output_file="load_profile_minmax.html"):
+def create_peak_calendar_from_percentiles(df, percentiles_df, zones=None,
+                                          percentile_threshold=95,
+                                          output_file="peak_calendar_percentiles.html"):
     """
-    Create an interactive load profile figure with month selector showing all years for that month.
-    Shows 4 separate subplots, one for each zone.
-    X-axis shows day and hour of month.
-    Each year appears in a different colour.
-    Min, max, and average load lines are displayed as reference.
+    Create a calendar heatmap showing which days are most likely to have peaks
+    based on percentile thresholds from calculate_percentiles_years.
+    With month selector dropdown.
 
     Parameters:
     -----------
     df : pl.DataFrame
         Load data with timestamp, value, zone, year_month columns
-    year_months : list
-        List of year-month strings
+    percentiles_df : pl.DataFrame
+        Output from calculate_percentiles_years with columns:
+        year, month, zone, p90, p95, p97_5, p99
     zones : list, optional
         List of zone names
-    minmax_data : pl.DataFrame, optional
-        DataFrame with columns: month, zone, avg_max, avg_min, avg_avg
+    percentile_threshold : int or float
+        Which percentile to use as threshold (90, 95, 97.5, 99)
     output_file : str
         Output HTML file path
+
+    Returns:
+    --------
+    fig : plotly figure
+        Calendar heatmap figure
     """
 
     if zones is None:
         zones = ["Connecticut", "Western Mass", "New Hampshire", "Total (NH+CT+WMass)"]
 
-    # Define line colors and styles
-    line_colors = {
-        "max": "#d62728",  # Red
-        "avg": "#1f77b4",  # Blue
-        "min": "#2ca02c"  # Green
-    }
-
-    # Get the actual timestamp column name (first column)
+    # Get timestamp column name
     timestamp_col = df.columns[0]
 
-    # Extract unique months and add day/hour columns
-    # Convert to UTC first to get consistent hour values
-    df_with_month = df.with_columns(
+    # Extract date information - convert to UTC to ensure consistent weekday
+    df_with_date = df.with_columns(
         pl.col(timestamp_col).dt.convert_time_zone("UTC").alias("tstamp_utc")
     ).with_columns(
-        pl.col("year_month").str.split("-").list.get(0).alias("year"),
-        pl.col("year_month").str.split("-").list.get(1).alias("month"),
+        pl.col("tstamp_utc").dt.date().alias("date"),
+        pl.col("tstamp_utc").dt.year().cast(pl.Utf8).alias("year"),
+        pl.col("tstamp_utc").dt.month().cast(pl.Utf8).str.zfill(2).alias("month"),
         pl.col("tstamp_utc").dt.day().alias("day"),
-        pl.col("tstamp_utc").dt.hour().alias("hour"),
-        (pl.col("tstamp_utc").dt.day() + pl.col("tstamp_utc").dt.hour() / 24).alias("day_hour")
+        (pl.col("tstamp_utc").dt.weekday() - 1).alias("weekday")  # Convert 1-7 to 0-6
     )
 
-    unique_months = sorted(df_with_month.select("month").unique().to_series().to_list())
-    unique_years = sorted(df_with_month.select("year").unique().to_series().to_list())
+    # Get daily max for each day and zone
+    daily_max = df_with_date.group_by(["date", "zone", "year", "month", "day", "weekday"]).agg(
+        pl.col("value").max().alias("daily_max")
+    )
 
-    # Create a color palette for years
-    colors = [
-        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5"
-    ]
-    year_colors = {year: colors[i % len(colors)] for i, year in enumerate(unique_years)}
+    # Convert percentile threshold to column name
+    percentile_col = f"p{percentile_threshold}".replace(".", "_")
 
-    # Create figure with subplots (2x2 grid)
+    # Get the threshold for each year-month-zone combination
+    threshold_data = percentiles_df.select(["year", "month", "zone", percentile_col]).rename(
+        {percentile_col: "threshold"}
+    )
+
+    # Join daily max with thresholds
+    daily_max = daily_max.join(
+        threshold_data,
+        on=["year", "month", "zone"]
+    )
+
+    # Determine if day is a peak day
+    daily_max = daily_max.with_columns(
+        (pl.col("daily_max") >= pl.col("threshold")).alias("is_peak")
+    )
+
+    # Get unique months
+    unique_months = sorted(daily_max.select("month").unique().to_series().to_list())
+
+    # Create subplots for each zone
     fig = sp.make_subplots(
         rows=2, cols=2,
         subplot_titles=zones,
-        specs=[[{"secondary_y": False}, {"secondary_y": False}],
-               [{"secondary_y": False}, {"secondary_y": False}]]
+        specs=[[{"type": "scatter"}, {"type": "scatter"}],
+               [{"type": "scatter"}, {"type": "scatter"}]]
     )
+
+    month_names = ["January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
 
     # Store trace info for visibility management
     trace_info = []
 
-    # Create traces for each month, year, and zone
-    for month in unique_months:
-        month_data = df_with_month.filter(pl.col("month") == month)
+    for zone_idx, zone in enumerate(zones, 1):
+        row = (zone_idx - 1) // 2 + 1
+        col = (zone_idx - 1) % 2 + 1
 
-        for zone_idx, zone in enumerate(zones, 1):
-            row = (zone_idx - 1) // 2 + 1
-            col = (zone_idx - 1) % 2 + 1
+        # Filter for this zone
+        zone_data = daily_max.filter(pl.col("zone") == zone)
 
-            zone_data = month_data.filter(pl.col("zone") == zone)
+        # Get unique year-months
+        unique_year_months = zone_data.select(
+            (pl.col("year") + "-" + pl.col("month")).alias("year_month")
+        ).unique().sort("year_month").to_series().to_list()
 
-            # Group by year and add separate trace for each year
-            for year in unique_years:
-                year_zone_data = (zone_data
-                                  .filter(pl.col("year") == year)
-                                  .filter(pl.col("value").is_not_null())
-                                  .sort(timestamp_col)
-                                  .unique(subset=[timestamp_col], keep="first")
-                                  )
+        # Plot each year-month
+        for year_month in unique_year_months:
+            year, month = year_month.split("-")
 
-                if len(year_zone_data) > 0:
-                    x_vals = year_zone_data.select("day_hour").to_series().to_list()
-                    y_vals = year_zone_data.select("value").to_series().to_list()
+            # Filter for this year-month
+            ym_data = zone_data.filter(
+                (pl.col("year") == year) & (pl.col("month") == month)
+            )
 
-                    fig.add_trace(
-                        go.Scatter(
-                            x=x_vals,
-                            y=y_vals,
-                            mode="lines",
-                            name=f"{year}",
-                            visible=(month == unique_months[0]),
-                            line=dict(color=year_colors[year], width=1),
-                            hovertemplate=f"<b>{zone} ({year})</b><br>Day: %{{customdata[0]}}, Hour: %{{customdata[1]}}<br>Load: %{{y:.2f}} MW<extra></extra>",
-                            customdata=year_zone_data.select(["day", "hour"]).to_numpy(),
-                            legendgroup=f"{year}",
-                            showlegend=(zone_idx == 1),
-                        ),
-                        row=row, col=col
-                    )
-                    trace_info.append((month, zone, year, False, None, None))
+            # Calculate week number using day of month
+            ym_data = ym_data.with_columns(
+                ((pl.col("day") - 1) // 7).alias("week")
+            )
 
-    # Get x-axis range for each month
-    x_ranges = {}
-    for month in unique_months:
-        month_data = df_with_month.filter(pl.col("month") == month)
-        day_hour_values = month_data.select("day_hour").to_series()
-        if len(day_hour_values) > 0:
-            x_ranges[month] = (day_hour_values.min(), day_hour_values.max())
+            # Separate peak and normal days
+            peak_data = ym_data.filter(pl.col("is_peak") == True)
+            normal_data = ym_data.filter(pl.col("is_peak") == False)
 
-    # Add min/max/average lines as traces
-    if minmax_data is not None and isinstance(minmax_data, pl.DataFrame):
-        for month in unique_months:
-            month_minmax = minmax_data.filter(pl.col("month") == month)
-            x_min, x_max = x_ranges.get(month, (1, 31))
+            # Plot normal days (blue)
+            if len(normal_data) > 0:
+                x_vals = normal_data.select("weekday").to_numpy().flatten().tolist()
+                y_vals = normal_data.select("week").to_numpy().flatten().tolist()
+                day_vals = normal_data.select("day").to_numpy().flatten().tolist()
+                date_vals = normal_data.select("date").to_numpy().flatten().tolist()
+                max_vals = normal_data.select("daily_max").to_numpy().flatten().tolist()
+                threshold_vals = normal_data.select("threshold").to_numpy().flatten().tolist()
 
-            for row_data in month_minmax.iter_rows(named=True):
-                zone = row_data['zone']
-                zone_idx = zones.index(zone) + 1
-                row = (zone_idx - 1) // 2 + 1
-                col = (zone_idx - 1) % 2 + 1
+                # Create customdata for hover
+                customdata = np.column_stack((
+                    [str(d) for d in date_vals],
+                    max_vals,
+                    threshold_vals
+                ))
 
-                # Add max load line (using avg_max column)
-                avg_max = row_data['avg_max']
-                if avg_max is not None and not (isinstance(avg_max, float) and (avg_max != avg_max)):
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[x_min, x_max],
-                            y=[avg_max, avg_max],
-                            mode="lines",
-                            name="Avg Max",
-                            visible=(month == unique_months[0]),
-                            line=dict(
-                                color=line_colors["max"],
-                                width=2,
-                                dash="dash"
-                            ),
-                            hovertemplate=f"Avg Max: {avg_max:.0f} MW<extra></extra>",
-                            showlegend=(zone_idx == 1),
-                            legendgroup="avg_max"
-                        ),
-                        row=row, col=col
-                    )
-                    trace_info.append((month, zone, None, True, "avg_max", avg_max))
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals,
+                        y=y_vals,
+                        mode='markers+text',
+                        marker=dict(size=20, color='#1f77b4'),
+                        text=day_vals,
+                        textposition='middle center',
+                        textfont=dict(color='white', size=10),
+                        hovertemplate='<b>%{customdata[0]}</b><br>Max: %{customdata[1]:.0f} MW<br>Threshold: %{customdata[2]:.0f} MW<extra></extra>',
+                        customdata=customdata,
+                        showlegend=False,
+                        name=f"{zone} - {year_month}",
+                        visible=(month == unique_months[0])
+                    ),
+                    row=row, col=col
+                )
+                trace_info.append((month, zone, "normal"))
 
-                # Add average load line (using avg_avg column)
-                avg_avg = row_data['avg_avg']
-                if avg_avg is not None and not (isinstance(avg_avg, float) and (avg_avg != avg_avg)):
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[x_min, x_max],
-                            y=[avg_avg, avg_avg],
-                            mode="lines",
-                            name="Avg Load",
-                            visible=(month == unique_months[0]),
-                            line=dict(
-                                color=line_colors["avg"],
-                                width=2,
-                                dash="dot"
-                            ),
-                            hovertemplate=f"Avg Load: {avg_avg:.0f} MW<extra></extra>",
-                            showlegend=(zone_idx == 1),
-                            legendgroup="avg_avg"
-                        ),
-                        row=row, col=col
-                    )
-                    trace_info.append((month, zone, None, True, "avg_avg", avg_avg))
+            # Plot peak days (red)
+            if len(peak_data) > 0:
+                x_vals = peak_data.select("weekday").to_numpy().flatten().tolist()
+                y_vals = peak_data.select("week").to_numpy().flatten().tolist()
+                day_vals = peak_data.select("day").to_numpy().flatten().tolist()
+                date_vals = peak_data.select("date").to_numpy().flatten().tolist()
+                max_vals = peak_data.select("daily_max").to_numpy().flatten().tolist()
+                threshold_vals = peak_data.select("threshold").to_numpy().flatten().tolist()
 
-                # Add min load line (using avg_min column)
-                avg_min = row_data['avg_min']
-                if avg_min is not None and not (isinstance(avg_min, float) and (avg_min != avg_min)):
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[x_min, x_max],
-                            y=[avg_min, avg_min],
-                            mode="lines",
-                            name="Avg Min",
-                            visible=(month == unique_months[0]),
-                            line=dict(
-                                color=line_colors["min"],
-                                width=2,
-                                dash="dashdot"
-                            ),
-                            hovertemplate=f"Avg Min: {avg_min:.0f} MW<extra></extra>",
-                            showlegend=(zone_idx == 1),
-                            legendgroup="avg_min"
-                        ),
-                        row=row, col=col
-                    )
-                    trace_info.append((month, zone, None, True, "avg_min", avg_min))
+                # Create customdata for hover
+                customdata = np.column_stack((
+                    [str(d) for d in date_vals],
+                    max_vals,
+                    threshold_vals
+                ))
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals,
+                        y=y_vals,
+                        mode='markers+text',
+                        marker=dict(size=20, color='#d62728'),
+                        text=day_vals,
+                        textposition='middle center',
+                        textfont=dict(color='white', size=10),
+                        hovertemplate='<b>%{customdata[0]}</b><br>Max: %{customdata[1]:.0f} MW<br>Threshold: %{customdata[2]:.0f} MW<br>PEAK DAY<extra></extra>',
+                        customdata=customdata,
+                        showlegend=False,
+                        name=f"{zone} - {year_month} (Peak)",
+                        visible=(month == unique_months[0])
+                    ),
+                    row=row, col=col
+                )
+                trace_info.append((month, zone, "peak"))
 
     # Create buttons for month selection
     buttons = []
-    month_names = ["January", "February", "March", "April", "May", "June",
-                   "July", "August", "September", "October", "November", "December"]
 
     for selected_month in unique_months:
         visibility = [
@@ -933,12 +919,8 @@ def create_load_profile_figure_minmax(df, year_months, zones=None, minmax_data=N
                 label=month_name,
                 method="update",
                 args=[
-                    {
-                        "visible": visibility,
-                    },
-                    {
-                        "title": f"Load Profile - {month_name} (All Years)"
-                    }
+                    {"visible": visibility},
+                    {"title": f"Peak Days Calendar - {month_name} (>{percentile_threshold}th Percentile)"}
                 ]
             )
         )
@@ -957,27 +939,20 @@ def create_load_profile_figure_minmax(df, year_months, zones=None, minmax_data=N
                 yanchor="top"
             )
         ],
-        title=f"Load Profile - {month_names[int(unique_months[0]) - 1]} (All Years)",
+        title=f"Peak Days Calendar - {month_names[int(unique_months[0]) - 1]} (>{percentile_threshold}th Percentile)",
         height=1000,
         template="plotly_white",
-        showlegend=True,
-        hovermode="closest",
-        legend=dict(
-            x=1.02,
-            y=1,
-            xanchor="left",
-            yanchor="top",
-            bgcolor="rgba(255, 255, 255, 0.8)",
-            bordercolor="rgba(0, 0, 0, 0.2)",
-            borderwidth=1
-        )
+        showlegend=False
     )
 
-    # Update all x and y axes
-    fig.update_xaxes(title_text="Day of Month (with Hour)")
-    fig.update_yaxes(title_text="Load (MW)")
+    # Update axes
+    fig.update_xaxes(title_text="Day of Week",
+                     tickvals=[0, 1, 2, 3, 4, 5, 6],
+                     ticktext=['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                     range=[-0.5, 6.5])
+    fig.update_yaxes(title_text="Week Number", autorange="reversed")
 
-    # Save as HTML
     fig.write_html(output_file)
+    print(f"Peak calendar saved to {output_file}")
 
     return fig

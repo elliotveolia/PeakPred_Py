@@ -129,13 +129,18 @@ aggregate_percentiles = funct.aggregate_percentiles_by_month(percentile_years)
 #)
 
 monthly_stats = funct.get_monthly_avg_of_daily_extremes(df, year_months)
-print(monthly_stats)
+
+#fig = plot.create_load_profile_figure_minmax(
+#    df=df,
+#    year_months=year_months,
+#    minmax_data=monthly_stats,
+#    output_file="load_profile_minmax.html"
+#)
 
 
-fig = plot.create_load_profile_figure_minmax(
+fig = plot.create_peak_calendar_from_percentiles(
     df=df,
-    year_months=year_months,
-    minmax_data=monthly_stats,
-    output_file="load_profile_minmax.html"
+    percentiles_df=percentile_years,
+    percentile_threshold=99,
+    output_file="peak_calendar_percentiles.html"
 )
-
