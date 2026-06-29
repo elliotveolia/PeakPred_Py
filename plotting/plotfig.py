@@ -1122,3 +1122,137 @@ def create_prediction_figure(predictions_df, month, year, zone):
     )
 
     return fig
+
+
+def create_all_visualizations(predictions_df, month, year, zones, output_dir="predict/figs/"):
+    """
+    Create individual zone figures and summary figure for a specific month
+
+    Parameters:
+    - predictions_df: Polars dataframe with predictions
+    - month: Month number (1-12)
+    - year: Year to visualize
+    - zones: List of zone names
+    - output_dir: Directory to save HTML files
+    """
+    import os
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    month_name = datetime(year, month, 1).strftime('%B %Y')
+
+    print("\n" + "=" * 70)
+    print(f"Creating Visualizations for {month_name}")
+    print("=" * 70)
+
+    # Create individual zone figures
+    print(f"\nCreating individual zone figures...")
+    for zone in zones:
+        try:
+            fig = create_prediction_figure(predictions_df, month=month, year=year, zone=zone)
+            if fig is not None:
+                filename = f"prediction_{year}_{month:02d}_{zone.replace(' ', '_').replace('(', '').replace(')', '').lower()}.html"
+                filepath = os.path.join(output_dir, filename)
+                fig.write_html(filepath)
+                print(f"  Saved: {filename}")
+            else:
+                print(f"  No data for {zone}")
+        except Exception as e:
+            print(f"  Error creating figure for {zone}: {str(e)}")
+
+    # Create summary figure for all zones
+    print(f"\nCreating summary figure for all zones...")
+    try:
+        fig_summary = create_summary_figure(predictions_df, month, year, zones)
+
+        if fig_summary is not None:
+            summary_filename = f"prediction_{year}_{month:02d}_all_zones_summary.html"
+            summary_filepath = os.path.join(output_dir, summary_filename)
+            fig_summary.write_html(summary_filepath)
+            print(f"  Saved: {summary_filename}")
+    except Exception as e:
+        print(f"  Error creating summary figure: {str(e)}")
+
+    print("\n" + "=" * 70)
+    print(f" Visualizations for {month_name} saved to {output_dir}")
+    print("=" * 70)
+
+
+def create_summary_figure(predictions_df, month, year, zones):
+    """
+    Create a summary figure showing all zones with peak annotations
+
+    Parameters:
+    - predictions_df: Polars dataframe with predictions
+    - month: Month number (1-12)
+    - year: Year to visualize
+    - zones: List of zone names
+
+    Returns:
+    - Plotly figure object
+    """
+    fig_summary = go.Figure()
+    colors = ['red', 'blue', 'green', 'purple']
+
+    month_name = datetime(year, month, 1).strftime('%B %Y')
+
+    for idx, zone in enumerate(zones):
+        pred_zone = predictions_df.filter(
+            (pl.col("zone") == zone) &
+            (pl.col("timestamp").dt.month() == month) &
+            (pl.col("timestamp").dt.year() == year)
+        )
+
+        if pred_zone.shape[0] > 0:
+            timestamps = pred_zone.select("timestamp").to_series().to_list()
+            predicted_mw = pred_zone.select("predicted_mw").to_series().to_list()
+
+            # Find peak for this zone
+            peak_idx = predicted_mw.index(max(predicted_mw))
+            peak_value = predicted_mw[peak_idx]
+            peak_timestamp = timestamps[peak_idx]
+
+            # Add prediction line
+            fig_summary.add_trace(go.Scatter(
+                x=timestamps,
+                y=predicted_mw,
+                mode='lines',
+                name=zone,
+                line=dict(width=2, color=colors[idx])
+            ))
+
+            # Add peak marker
+            fig_summary.add_trace(go.Scatter(
+                x=[peak_timestamp],
+                y=[peak_value],
+                mode='markers+text',
+                name=f'{zone} Peak',
+                marker=dict(
+                    size=10,
+                    color=colors[idx],
+                    symbol='star',
+                    line=dict(color='yellow', width=1)
+                ),
+                text=[f'{peak_value:.0f} MW'],
+                textposition='top center',
+                textfont=dict(size=10, color=colors[idx]),
+                showlegend=True
+            ))
+
+    fig_summary.update_layout(
+        title=f"Predicted MW Usage - All Zones - {month_name}",
+        xaxis_title="Date",
+        yaxis_title="Megawatts",
+        hovermode='x unified',
+        template='plotly_white',
+        height=700,
+        width=1400,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
+    )
+
+    return fig_summary

@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import polars as pl
 import pandas as pd
@@ -185,98 +186,59 @@ def aggregate_percentiles_by_month(results_df):
     return aggregated_df
 
 
-def get_monthly_avg_of_daily_extremes(df, zones=None):
+def get_monthly_avg_of_daily_extremes(df, year_months):
     """
-    Calculate average of daily max/min/avg values for each month across all years.
-
-    Process:
-    1. For each year-month, calculate the average of daily max/min/avg values
-    2. Then average those yearly values across all years
-
-    Parameters:
-    -----------
-    df : pl.DataFrame
-        Polars DataFrame with columns: timestamp, value, zone, year_month
-    zones : list, optional
-        List of zone names
-
-    Returns:
-    --------
-    results_df : pl.DataFrame
-        DataFrame with columns: month, zone, avg_max, avg_min, avg_avg
+    Calculate monthly average of daily min/max values
     """
+    # Find timestamp column
+    timestamp_col = "timestamp"
 
-    if zones is None:
-        zones = ["Connecticut", "Western Mass", "New Hampshire", "Total (NH+CT+WMass)"]
-
-    # Get timestamp column name
-    timestamp_col = df.columns[0]
-
-    # Extract year, month, and date
+    # Ensure timestamp is datetime
     df_with_dates = df.with_columns(
-        pl.col(timestamp_col).dt.strftime("%Y").alias("year"),
-        pl.col(timestamp_col).dt.strftime("%m").alias("month"),
+        pl.col(timestamp_col).cast(pl.Datetime).alias(timestamp_col)
+    )
+
+    # Extract date components
+    df_with_dates = df_with_dates.with_columns([
+        pl.col(timestamp_col).dt.year().alias("year"),
+        pl.col(timestamp_col).dt.month().alias("month"),
         pl.col(timestamp_col).dt.date().alias("date")
-    )
+    ])
 
-    # Step 1: Get daily max/min/avg for each day
-    daily_stats = df_with_dates.group_by(["date", "zone"]).agg(
-        pl.col("value").max().alias("daily_max"),
+    # Get daily min/max by zone
+    daily_extremes = df_with_dates.group_by("zone", "year", "month", "date").agg([
         pl.col("value").min().alias("daily_min"),
-        pl.col("value").mean().alias("daily_avg")
-    )
+        pl.col("value").max().alias("daily_max"),
+    ])
 
-    # Add year and month back to daily stats
-    daily_stats = daily_stats.with_columns(
-        pl.col("date").dt.strftime("%Y").alias("year"),
-        pl.col("date").dt.strftime("%m").alias("month")
-    )
+    # Get monthly average of daily extremes
+    monthly_stats = daily_extremes.group_by("zone", "year", "month").agg([
+        pl.col("daily_min").mean().alias("avg_daily_min"),
+        pl.col("daily_max").mean().alias("avg_daily_max"),
+        pl.col("daily_min").min().alias("min_of_mins"),
+        pl.col("daily_max").max().alias("max_of_maxs"),
+    ])
 
-    # Step 2: For each year-month-zone, average the daily values
-    yearly_monthly_stats = daily_stats.group_by(["year", "month", "zone"]).agg(
-        pl.col("daily_max").mean().alias("yearly_avg_max"),
-        pl.col("daily_min").mean().alias("yearly_avg_min"),
-        pl.col("daily_avg").mean().alias("yearly_avg_avg")
-    )
-
-    # Step 3: For each month-zone, average across all years
-    results_df = yearly_monthly_stats.group_by(["month", "zone"]).agg(
-        pl.col("yearly_avg_max").mean().alias("avg_max"),
-        pl.col("yearly_avg_min").mean().alias("avg_min"),
-        pl.col("yearly_avg_avg").mean().alias("avg_avg")
-    ).sort(["month", "zone"])
-
-    return results_df
+    return monthly_stats
 
 
-def engineer_features(df_input):
+def engineer_features_with_weather(df_input):
     """
-    Engineer features for the predictive model
-    Works with existing df structure from CDS
+    Engineer features for the predictive model including temperature
     """
     df_feat = df_input.clone()
 
-    # Identify timestamp column (first column from CDS)
-    timestamp_col = df_feat.columns[0]
-
-    # Ensure timestamp is datetime
-    if df_feat[timestamp_col].dtype != pl.Datetime:
-        df_feat = df_feat.with_columns(
-            pl.col(timestamp_col).cast(pl.Datetime).alias("timestamp")
-        )
-    else:
-        df_feat = df_feat.with_columns(
-            pl.col(timestamp_col).alias("timestamp")
-        )
+    # Identify timestamp column
+    timestamp_col = "timestamp"
 
     # Extract all temporal features
     df_feat = df_feat.with_columns([
-        pl.col("timestamp").dt.year().alias("year"),
-        pl.col("timestamp").dt.month().alias("month"),
-        pl.col("timestamp").dt.day().alias("day"),
-        pl.col("timestamp").dt.hour().alias("hour"),
-        pl.col("timestamp").dt.weekday().alias("dayofweek"),
-        pl.col("timestamp").dt.ordinal_day().alias("dayofyear"),
+        pl.col(timestamp_col).dt.year().alias("year"),
+        pl.col(timestamp_col).dt.month().alias("month"),
+        pl.col(timestamp_col).dt.day().alias("day"),
+        pl.col(timestamp_col).dt.hour().alias("hour"),
+        pl.col(timestamp_col).dt.weekday().alias("dayofweek"),
+        pl.col(timestamp_col).dt.ordinal_day().alias("dayofyear"),
     ])
 
     # Add weekend indicator
@@ -291,11 +253,47 @@ def engineer_features(df_input):
         pl.col("value").shift(168).over("zone").alias("value_lag_168h"),  # 1 week
     ])
 
-    # Rolling averages (by zone)
+    # Rolling averages for demand (by zone)
     df_feat = df_feat.with_columns([
         pl.col("value").rolling_mean(window_size=24).over("zone").alias("value_rolling_24h"),
         pl.col("value").rolling_mean(window_size=168).over("zone").alias("value_rolling_168h"),
     ])
+
+    # Temperature lag features
+    df_feat = df_feat.with_columns([
+        pl.col("temperature").shift(1).alias("temp_lag_1h"),
+        pl.col("temperature").shift(24).alias("temp_lag_24h"),
+    ])
+
+    # Temperature rolling averages
+    df_feat = df_feat.with_columns([
+        pl.col("temperature").rolling_mean(window_size=24).alias("temp_rolling_24h"),
+        pl.col("temperature").rolling_mean(window_size=168).alias("temp_rolling_168h"),
+    ])
+
+    # Heating/Cooling degree days (base 65°F)
+    df_feat = df_feat.with_columns([
+        pl.max_horizontal(62 - pl.col("temperature"), 0).alias("heating_degree_days"),
+        pl.max_horizontal(pl.col("temperature") - 62, 0).alias("cooling_degree_days"),
+    ])
+
+    # Temperature bins (very cold, cold, cool, moderate, warm, hot, very hot)
+    df_feat = df_feat.with_columns(
+        pl.when(pl.col("temperature") < 20)
+        .then(0)
+        .when(pl.col("temperature") < 32)
+        .then(1)
+        .when(pl.col("temperature") < 50)
+        .then(2)
+        .when(pl.col("temperature") < 70)
+        .then(3)
+        .when(pl.col("temperature") < 85)
+        .then(4)
+        .when(pl.col("temperature") < 95)
+        .then(5)
+        .otherwise(6)
+        .alias("temp_bin")
+    )
 
     # Hour-of-day statistics (by zone)
     hourly_stats = df_feat.group_by("zone", "hour").agg([
@@ -318,31 +316,55 @@ def engineer_features(df_input):
     ])
     df_feat = df_feat.join(dow_stats, on=["zone", "dayofweek"], how="left")
 
-    # Drop the original timestamp column if it's not the standard name
-    if timestamp_col != "timestamp":
-        df_feat = df_feat.drop(timestamp_col)
+    # Temperature statistics by hour (by zone)
+    temp_hourly_stats = df_feat.group_by("zone", "hour").agg([
+        pl.col("temperature").mean().alias("temp_hour_avg"),
+        pl.col("temperature").std().alias("temp_hour_std"),
+    ])
+    df_feat = df_feat.join(temp_hourly_stats, on=["zone", "hour"], how="left")
+
+    # Temperature statistics by month (by zone)
+    temp_monthly_stats = df_feat.group_by("zone", "month").agg([
+        pl.col("temperature").mean().alias("temp_month_avg"),
+        pl.col("temperature").std().alias("temp_month_std"),
+    ])
+    df_feat = df_feat.join(temp_monthly_stats, on=["zone", "month"], how="left")
 
     return df_feat
 
-
-def train_zone_model(df_zone, zone_name, test_size=0.2):
+def train_zone_model_with_weather(df_zone, zone_name, test_size=0.2):
     """
-    Train XGBoost model for a specific zone
+    Train XGBoost model with temperature features
     """
     print(f"\nTraining model for {zone_name}...")
 
-    # Feature columns
+    # Feature columns - INCLUDING TEMPERATURE
     feature_cols = [
+        # Temporal features
         'hour', 'dayofweek', 'is_weekend', 'month', 'day',
+
+        # Demand lag features
         'value_lag_1h', 'value_lag_24h', 'value_lag_168h',
         'value_rolling_24h', 'value_rolling_168h',
+
+        # Demand statistics
         'hour_avg', 'hour_std',
         'month_avg', 'month_std',
-        'dow_avg', 'dow_std'
+        'dow_avg', 'dow_std',
+
+        # TEMPERATURE FEATURES
+        'temperature',
+        'temp_lag_1h', 'temp_lag_24h',
+        'temp_rolling_24h', 'temp_rolling_168h',
+        'heating_degree_days', 'cooling_degree_days',
+        'temp_bin',  # This will now have values 0-6 instead of 0-4
+        'temp_hour_avg', 'temp_hour_std',
+        'temp_month_avg', 'temp_month_std',
     ]
 
     # Filter available columns
     feature_cols = [col for col in feature_cols if col in df_zone.columns]
+
 
     # Convert to numpy
     X = df_zone.select(feature_cols).to_numpy()
@@ -369,8 +391,7 @@ def train_zone_model(df_zone, zone_name, test_size=0.2):
         colsample_bytree=0.8,
         random_state=42,
         n_jobs=-1,
-        early_stopping_rounds=20,
-        verbose=0
+        early_stopping_rounds=20
     )
 
     model.fit(
@@ -387,12 +408,19 @@ def train_zone_model(df_zone, zone_name, test_size=0.2):
     rmse = np.sqrt(mean_squared_error(y_test_original, y_pred_test_original))
     mae = mean_absolute_error(y_test_original, y_pred_test_original)
     r2 = r2_score(y_test_original, y_pred_test_original)
-    mape = np.mean(np.abs((y_test_original - y_pred_test_original) / y_test_original)) * 100
+
+    # Calculate MAPE safely
+    mask = y_test_original != 0
+    if np.sum(mask) > 0:
+        mape = np.mean(np.abs((y_test_original[mask] - y_pred_test_original[mask]) / y_test_original[mask])) * 100
+    else:
+        mape = np.nan
 
     print(f"  RMSE: {rmse:.2f} MW")
     print(f"  MAE: {mae:.2f} MW")
     print(f"  R² Score: {r2:.4f}")
-    print(f"  MAPE: {mape:.2f}%")
+    if not np.isnan(mape):
+        print(f"  MAPE: {mape:.2f}%")
 
     # Feature importance
     feature_importance = pd.DataFrame({
@@ -400,8 +428,8 @@ def train_zone_model(df_zone, zone_name, test_size=0.2):
         'importance': model.feature_importances_
     }).sort_values('importance', ascending=False)
 
-    print(f"\n  Top 5 Features for {zone_name}:")
-    for idx, row in feature_importance.head(5).iterrows():
+    print(f"\n  Top 10 Features for {zone_name}:")
+    for idx, row in feature_importance.head(10).iterrows():
         print(f"    - {row['feature']}: {row['importance']:.4f}")
 
     return {
@@ -413,15 +441,15 @@ def train_zone_model(df_zone, zone_name, test_size=0.2):
             'rmse': rmse,
             'mae': mae,
             'r2': r2,
-            'mape': mape
+            'mape': mape if not np.isnan(mape) else None
         },
         'feature_importance': feature_importance
     }
 
-
-def predict_month(zone, month, year_to_predict, df_input, model_dict, percentile_data=None):
+def predict_month_with_dynamic_adjustment(zone, month, year_to_predict, df_input, model_dict,
+                                          current_weather_data=None, percentile_data=None):
     """
-    Predict all hours for a specific month and zone
+    Predict all hours for a specific month and zone with dynamic temperature adjustment
 
     Parameters:
     - zone: Zone name (e.g., "Connecticut")
@@ -429,6 +457,8 @@ def predict_month(zone, month, year_to_predict, df_input, model_dict, percentile
     - year_to_predict: Year to predict
     - df_input: Input dataframe with historical data
     - model_dict: Dictionary containing model, scalers, and feature columns
+    - current_weather_data: Polars dataframe with ACTUAL current/recent temperature data
+                           Used to adjust predictions for the rest of the month
     - percentile_data: Optional percentile data for bounds
     """
 
@@ -449,8 +479,28 @@ def predict_month(zone, month, year_to_predict, df_input, model_dict, percentile
 
     predictions = []
 
-    # Get days in month
+    import calendar
     days_in_month = calendar.monthrange(year_to_predict, month)[1]
+
+    # Calculate temperature adjustment factor if current weather data is provided
+    temp_adjustment_factor = 1.0
+    current_avg_temp = None
+    historical_avg_temp = None
+
+    if current_weather_data is not None and current_weather_data.shape[0] > 0:
+        # Get average of current temperatures
+        current_avg_temp = current_weather_data.select("temperature").mean().item()
+
+        # Get historical average for this month
+        historical_avg_temp = historical.select("temperature").mean().item()
+
+        if historical_avg_temp is not None and historical_avg_temp != 0:
+            # Calculate adjustment factor
+            temp_adjustment_factor = current_avg_temp / historical_avg_temp
+            print(f"  Temperature adjustment for {zone}:")
+            print(f"    Historical avg: {historical_avg_temp:.1f}°F")
+            print(f"    Current avg: {current_avg_temp:.1f}°F")
+            print(f"    Adjustment factor: {temp_adjustment_factor:.3f}")
 
     for day in range(1, days_in_month + 1):
         for hour in range(24):
@@ -462,6 +512,49 @@ def predict_month(zone, month, year_to_predict, df_input, model_dict, percentile
                 pred_date = datetime(year_to_predict, month, day)
                 dow = pred_date.weekday()
                 is_weekend = 1 if dow in [5, 6] else 0
+
+                # Get temperature with dynamic adjustment
+                forecast_temp = None
+                temp_source = "historical"
+
+                # First, try to get actual current temperature if available
+                if current_weather_data is not None:
+                    weather_match = current_weather_data.filter(
+                        (pl.col("timestamp").dt.date() == pred_date.date()) &
+                        (pl.col("timestamp").dt.hour() == hour)
+                    )
+
+                    if weather_match.shape[0] > 0:
+                        forecast_temp = weather_match.select("temperature").item()
+                        temp_source = "current_actual"
+
+                # If no current data, use historical average with adjustment
+                if forecast_temp is None:
+                    historical_temp = hour_data.select("temperature").mean().item() or 70
+
+                    # Apply adjustment factor to historical temperature
+                    if temp_adjustment_factor != 1.0:
+                        forecast_temp = historical_temp * temp_adjustment_factor
+                        temp_source = "historical_adjusted"
+                    else:
+                        forecast_temp = historical_temp
+                        temp_source = "historical_baseline"
+
+                # Calculate temp_bin with NEW RANGES (0-6)
+                if forecast_temp < 0:
+                    temp_bin = 0
+                elif forecast_temp < 20:
+                    temp_bin = 1
+                elif forecast_temp < 50:
+                    temp_bin = 2
+                elif forecast_temp < 70:
+                    temp_bin = 3
+                elif forecast_temp < 85:
+                    temp_bin = 4
+                elif forecast_temp < 95:
+                    temp_bin = 5
+                else:
+                    temp_bin = 6
 
                 # Create feature vector
                 features_dict = {
@@ -489,6 +582,18 @@ def predict_month(zone, month, year_to_predict, df_input, model_dict, percentile
                     'dow_avg': float(
                         hour_data.select("dow_avg").mean().item() or historical.select("value").mean().item()),
                     'dow_std': float(hour_data.select("dow_std").mean().item() or 0),
+                    'temperature': float(forecast_temp),
+                    'temp_lag_1h': float(forecast_temp),
+                    'temp_lag_24h': float(forecast_temp),
+                    'temp_rolling_24h': float(forecast_temp),
+                    'temp_rolling_168h': float(forecast_temp),
+                    'heating_degree_days': float(max(0, 65 - forecast_temp)),
+                    'cooling_degree_days': float(max(0, forecast_temp - 65)),
+                    'temp_bin': float(temp_bin),
+                    'temp_hour_avg': float(hour_data.select("temp_hour_avg").mean().item() or forecast_temp),
+                    'temp_hour_std': float(hour_data.select("temp_hour_std").mean().item() or 0),
+                    'temp_month_avg': float(historical.select("temp_month_avg").mean().item()),
+                    'temp_month_std': float(historical.select("temp_month_std").mean().item()),
                 }
 
                 # Build feature array in correct order
@@ -526,9 +631,11 @@ def predict_month(zone, month, year_to_predict, df_input, model_dict, percentile
                     'historical_min': hist_min,
                     'historical_max': hist_max,
                     'historical_avg': hist_avg,
+                    'temperature_used': float(forecast_temp),
+                    'temp_source': temp_source,
+                    'temp_adjustment_factor': float(temp_adjustment_factor),
                 })
             except Exception as e:
-                # Silently skip errors for now
                 continue
 
     if len(predictions) == 0:
@@ -536,3 +643,35 @@ def predict_month(zone, month, year_to_predict, df_input, model_dict, percentile
         return None
 
     return pl.DataFrame(predictions)
+
+
+def save_predictions(predictions_list, target_year, output_dir="predict/data/"):
+    """
+    Combine and save predictions to CSV
+
+    Parameters:
+    - predictions_list: List of prediction dataframes
+    - target_year: Year being predicted
+    - output_dir: Directory to save predictions
+
+    Returns:
+    - Combined predictions dataframe or None if empty
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    if len(predictions_list) == 0:
+        print("ERROR: No predictions were generated!")
+        return None
+
+    # Combine all predictions
+    predictions_combined = pl.concat(predictions_list)
+
+    print(f"\nTotal predictions generated: {predictions_combined.shape[0]}")
+
+    # Save predictions
+    filepath = os.path.join(output_dir, f"predictions_{target_year}.csv")
+    predictions_combined.write_csv(filepath)
+    print(f"\nPredictions saved to: {filepath}")
+
+    return predictions_combined  # <-- ADDED THIS RETURN
