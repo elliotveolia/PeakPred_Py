@@ -185,7 +185,6 @@ def aggregate_percentiles_by_month(results_df):
     aggregated_df = pl.DataFrame(data)
     return aggregated_df
 
-
 def get_monthly_avg_of_daily_extremes(df, year_months):
     """
     Calculate monthly average of daily min/max values
@@ -221,10 +220,46 @@ def get_monthly_avg_of_daily_extremes(df, year_months):
 
     return monthly_stats
 
+def process_zone_data(demand_df, temp_df, zone_name):
+    """
+    Process demand and temperature data for a specific zone
+    Convert from UTC to America/New_York
+    """
+    # Standardize demand column names
+    demand_df = demand_df.rename({demand_df.columns[1]: "value"})
+    demand_df = demand_df.with_columns(pl.lit(zone_name).alias("zone"))
+
+    # Standardize temperature column names
+    temp_df = temp_df.rename({temp_df.columns[1]: "temperature"})
+
+    # Standardize timestamps and convert from UTC to Eastern Time
+    demand_col = demand_df.columns[0]
+    demand_df = demand_df.with_columns(
+        pl.col(demand_col).cast(pl.Datetime("ms", "UTC")).dt.convert_time_zone("America/New_York").alias("timestamp")
+    )
+    if demand_col != "timestamp":
+        demand_df = demand_df.drop(demand_col)
+
+    temp_col = temp_df.columns[0]
+    temp_df = temp_df.with_columns(
+        pl.col(temp_col).cast(pl.Datetime("ms", "UTC")).dt.convert_time_zone("America/New_York").alias("timestamp")
+    )
+    if temp_col != "timestamp":
+        temp_df = temp_df.drop(temp_col)
+
+    # Join demand with zone-specific temperature
+    zone_data = demand_df.join(
+        temp_df.select(["timestamp", "temperature"]),
+        on="timestamp",
+        how="left"
+    )
+
+    return zone_data
+
 
 def engineer_features_with_weather(df_input):
     """
-    Engineer features for the predictive model including temperature
+    Engineer features for the predictive model including ZONE-SPECIFIC temperature
     """
     df_feat = df_input.clone()
 
@@ -250,7 +285,7 @@ def engineer_features_with_weather(df_input):
     df_feat = df_feat.with_columns([
         pl.col("value").shift(1).over("zone", "year", "month", "day").alias("value_lag_1h"),
         pl.col("value").shift(24).over("zone", "year", "month").alias("value_lag_24h"),
-        pl.col("value").shift(168).over("zone").alias("value_lag_168h"),  # 1 week
+        pl.col("value").shift(168).over("zone").alias("value_lag_168h"),
     ])
 
     # Rolling averages for demand (by zone)
@@ -259,25 +294,26 @@ def engineer_features_with_weather(df_input):
         pl.col("value").rolling_mean(window_size=168).over("zone").alias("value_rolling_168h"),
     ])
 
-    # Temperature lag features
+    # ZONE-SPECIFIC Temperature lag features
+    # These use the zone-specific temperature already in the dataframe
     df_feat = df_feat.with_columns([
-        pl.col("temperature").shift(1).alias("temp_lag_1h"),
-        pl.col("temperature").shift(24).alias("temp_lag_24h"),
+        pl.col("temperature").shift(1).over("zone").alias("temp_lag_1h"),
+        pl.col("temperature").shift(24).over("zone").alias("temp_lag_24h"),
     ])
 
-    # Temperature rolling averages
+    # ZONE-SPECIFIC Temperature rolling averages
     df_feat = df_feat.with_columns([
-        pl.col("temperature").rolling_mean(window_size=24).alias("temp_rolling_24h"),
-        pl.col("temperature").rolling_mean(window_size=168).alias("temp_rolling_168h"),
+        pl.col("temperature").rolling_mean(window_size=24).over("zone").alias("temp_rolling_24h"),
+        pl.col("temperature").rolling_mean(window_size=168).over("zone").alias("temp_rolling_168h"),
     ])
 
-    # Heating/Cooling degree days (base 65°F)
+    # Heating/Cooling degree days (base 65°F) - using zone-specific temps
     df_feat = df_feat.with_columns([
-        pl.max_horizontal(62 - pl.col("temperature"), 0).alias("heating_degree_days"),
-        pl.max_horizontal(pl.col("temperature") - 62, 0).alias("cooling_degree_days"),
+        pl.max_horizontal(65 - pl.col("temperature"), 0).alias("heating_degree_days"),
+        pl.max_horizontal(pl.col("temperature") - 65, 0).alias("cooling_degree_days"),
     ])
 
-    # Temperature bins (very cold, cold, cool, moderate, warm, hot, very hot)
+    # Temperature bins - using zone-specific temps
     df_feat = df_feat.with_columns(
         pl.when(pl.col("temperature") < 20)
         .then(0)
@@ -295,48 +331,73 @@ def engineer_features_with_weather(df_input):
         .alias("temp_bin")
     )
 
-    # Hour-of-day statistics (by zone)
+    # Hour-of-day statistics (by zone) - zone-specific
     hourly_stats = df_feat.group_by("zone", "hour").agg([
         pl.col("value").mean().alias("hour_avg"),
         pl.col("value").std().alias("hour_std"),
     ])
     df_feat = df_feat.join(hourly_stats, on=["zone", "hour"], how="left")
 
-    # Month-of-year statistics (by zone)
+    # Month-of-year statistics (by zone) - zone-specific
     monthly_stats = df_feat.group_by("zone", "month").agg([
         pl.col("value").mean().alias("month_avg"),
         pl.col("value").std().alias("month_std"),
     ])
     df_feat = df_feat.join(monthly_stats, on=["zone", "month"], how="left")
 
-    # Day-of-week statistics (by zone)
+    # Day-of-week statistics (by zone) - zone-specific
     dow_stats = df_feat.group_by("zone", "dayofweek").agg([
         pl.col("value").mean().alias("dow_avg"),
         pl.col("value").std().alias("dow_std"),
     ])
     df_feat = df_feat.join(dow_stats, on=["zone", "dayofweek"], how="left")
 
-    # Temperature statistics by hour (by zone)
+    # ZONE-SPECIFIC Temperature statistics by hour
     temp_hourly_stats = df_feat.group_by("zone", "hour").agg([
         pl.col("temperature").mean().alias("temp_hour_avg"),
         pl.col("temperature").std().alias("temp_hour_std"),
     ])
     df_feat = df_feat.join(temp_hourly_stats, on=["zone", "hour"], how="left")
 
-    # Temperature statistics by month (by zone)
+    # ZONE-SPECIFIC Temperature statistics by month
     temp_monthly_stats = df_feat.group_by("zone", "month").agg([
         pl.col("temperature").mean().alias("temp_month_avg"),
         pl.col("temperature").std().alias("temp_month_std"),
     ])
     df_feat = df_feat.join(temp_monthly_stats, on=["zone", "month"], how="left")
 
+    # Fill NaN values in lag/rolling features with zone averages
+    df_feat = df_feat.with_columns([
+        pl.col("value_lag_1h").fill_null(pl.col("hour_avg")),
+        pl.col("value_lag_24h").fill_null(pl.col("hour_avg")),
+        pl.col("value_lag_168h").fill_null(pl.col("hour_avg")),
+        pl.col("value_rolling_24h").fill_null(pl.col("hour_avg")),
+        pl.col("value_rolling_168h").fill_null(pl.col("hour_avg")),
+        pl.col("temp_lag_1h").fill_null(pl.col("temperature")),
+        pl.col("temp_lag_24h").fill_null(pl.col("temperature")),
+        pl.col("temp_rolling_24h").fill_null(pl.col("temperature")),
+        pl.col("temp_rolling_168h").fill_null(pl.col("temperature")),
+    ])
+
     return df_feat
+
+
+
+
 
 def train_zone_model_with_weather(df_zone, zone_name, test_size=0.2):
     """
     Train XGBoost model with temperature features
     """
     print(f"\nTraining model for {zone_name}...")
+
+    # DEBUG: Check data before training
+    print(f"  Input data shape: {df_zone.shape}")
+    print(f"  Null counts:")
+    for col in df_zone.columns:
+        null_count = df_zone.select(col).null_count().item()
+        if null_count > 0:
+            print(f"    {col}: {null_count} nulls")
 
     # Feature columns - INCLUDING TEMPERATURE
     feature_cols = [
@@ -357,7 +418,7 @@ def train_zone_model_with_weather(df_zone, zone_name, test_size=0.2):
         'temp_lag_1h', 'temp_lag_24h',
         'temp_rolling_24h', 'temp_rolling_168h',
         'heating_degree_days', 'cooling_degree_days',
-        'temp_bin',  # This will now have values 0-6 instead of 0-4
+        'temp_bin',
         'temp_hour_avg', 'temp_hour_std',
         'temp_month_avg', 'temp_month_std',
     ]
@@ -365,10 +426,19 @@ def train_zone_model_with_weather(df_zone, zone_name, test_size=0.2):
     # Filter available columns
     feature_cols = [col for col in feature_cols if col in df_zone.columns]
 
+    print(f"  Feature columns: {len(feature_cols)}")
+    print(f"  Available columns: {df_zone.columns}")
 
     # Convert to numpy
     X = df_zone.select(feature_cols).to_numpy()
     y = df_zone.select("value").to_numpy().flatten()
+
+    print(f"  X shape: {X.shape}")
+    print(f"  y shape: {y.shape}")
+
+    if X.shape[0] == 0:
+        print(f"  ERROR: No data for {zone_name}!")
+        return None
 
     # Normalize
     scaler_X = StandardScaler()
@@ -643,7 +713,6 @@ def predict_month_with_dynamic_adjustment(zone, month, year_to_predict, df_input
         return None
 
     return pl.DataFrame(predictions)
-
 
 def save_predictions(predictions_list, target_year, output_dir="predict/data/"):
     """
