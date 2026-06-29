@@ -947,12 +947,178 @@ def create_peak_calendar_from_percentiles(df, percentiles_df, zones=None,
 
     # Update axes
     fig.update_xaxes(title_text="Day of Week",
-                     tickvals=[0, 1, 2, 3, 4, 5, 6],
+                     tickvals=[1, 2, 3, 4, 5, 6],
                      ticktext=['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
                      range=[-0.5, 6.5])
     fig.update_yaxes(title_text="Week Number", autorange="reversed")
 
     fig.write_html(output_file)
-    print(f"Peak calendar saved to {output_file}")
+
+    return fig
+
+
+def create_prediction_figure(predictions_df, month, year, zone):
+    """
+    Create interactive Plotly figure for predictions
+    Works directly with Polars without PyArrow
+    Includes annotation for peak demand
+    """
+    if predictions_df is None or predictions_df.shape[0] == 0:
+        print(f"Error: No predictions dataframe provided")
+        return None
+
+    # Filter predictions
+    pred_month = predictions_df.filter(
+        (pl.col("zone") == zone) &
+        (pl.col("timestamp").dt.month() == month) &
+        (pl.col("timestamp").dt.year() == year)
+    )
+
+    if pred_month.shape[0] == 0:
+        print(f"Warning: No predictions found for {zone} in {month}/{year}")
+        return None
+
+    # Convert to lists instead of pandas
+    timestamps = pred_month.select("timestamp").to_series().to_list()
+    predicted_mw = pred_month.select("predicted_mw").to_series().to_list()
+    p10 = pred_month.select("p10").to_series().to_list()
+    p25 = pred_month.select("p25").to_series().to_list()
+    p75 = pred_month.select("p75").to_series().to_list()
+    p90 = pred_month.select("p90").to_series().to_list()
+    historical_avg = pred_month.select("historical_avg").to_series().to_list()
+    historical_min = pred_month.select("historical_min").to_series().to_list()
+    historical_max = pred_month.select("historical_max").to_series().to_list()
+
+    # Find peak prediction
+    peak_idx = predicted_mw.index(max(predicted_mw))
+    peak_value = predicted_mw[peak_idx]
+    peak_timestamp = timestamps[peak_idx]
+
+    fig = go.Figure()
+
+    # Add percentile bands (10th-90th)
+    fig.add_trace(go.Scatter(
+        x=timestamps,
+        y=p90,
+        fill=None,
+        mode='lines',
+        line_color='rgba(0,0,255,0)',
+        showlegend=False,
+        name='p90'
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=timestamps,
+        y=p10,
+        fill='tonexty',
+        mode='lines',
+        line_color='rgba(0,0,255,0)',
+        name='10th-90th Percentile',
+        fillcolor='rgba(0,100,200,0.2)'
+    ))
+
+    # Add percentile bands (25th-75th)
+    fig.add_trace(go.Scatter(
+        x=timestamps,
+        y=p75,
+        fill=None,
+        mode='lines',
+        line_color='rgba(0,0,255,0)',
+        showlegend=False,
+        name='p75'
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=timestamps,
+        y=p25,
+        fill='tonexty',
+        mode='lines',
+        line_color='rgba(0,0,255,0)',
+        name='25th-75th Percentile',
+        fillcolor='rgba(0,100,200,0.3)'
+    ))
+
+    # Add historical min/max as a shaded region
+    fig.add_trace(go.Scatter(
+        x=timestamps,
+        y=historical_max,
+        fill=None,
+        mode='lines',
+        line_color='rgba(200,200,200,0)',
+        showlegend=False,
+        name='Historical Max'
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=timestamps,
+        y=historical_min,
+        fill='tonexty',
+        mode='lines',
+        line_color='rgba(200,200,200,0)',
+        name='Historical Min/Max Range',
+        fillcolor='rgba(200,200,200,0.1)'
+    ))
+
+    # Add historical average
+    fig.add_trace(go.Scatter(
+        x=timestamps,
+        y=historical_avg,
+        mode='lines',
+        name='Historical Average',
+        line=dict(color='green', width=1, dash='dash')
+    ))
+
+    # Add prediction line
+    fig.add_trace(go.Scatter(
+        x=timestamps,
+        y=predicted_mw,
+        mode='lines',
+        name='Predicted',
+        line=dict(color='red', width=2)
+    ))
+
+    # Add peak point marker
+    fig.add_trace(go.Scatter(
+        x=[peak_timestamp],
+        y=[peak_value],
+        mode='markers',
+        name='Peak Demand',
+        marker=dict(
+            size=12,
+            color='darkred',
+            symbol='star',
+            line=dict(color='yellow', width=2)
+        ),
+        showlegend=True
+    ))
+
+    # Add annotation for peak
+    fig.add_annotation(
+        x=peak_timestamp,
+        y=peak_value,
+        text=f"<b>Peak: {peak_value:.0f} MW</b><br>{peak_timestamp.strftime('%b %d, %H:%M')}",
+        showarrow=True,
+        arrowhead=2,
+        arrowsize=1,
+        arrowwidth=2,
+        arrowcolor='darkred',
+        ax=-50,
+        ay=-50,
+        bgcolor='rgba(255, 255, 200, 0.8)',
+        bordercolor='darkred',
+        borderwidth=2,
+        font=dict(size=12, color='darkred'),
+        align='center'
+    )
+
+    fig.update_layout(
+        title=f"Predicted MW Usage - {zone} - {datetime(year, month, 1).strftime('%B %Y')}",
+        xaxis_title="Date",
+        yaxis_title="Megawatts",
+        hovermode='x unified',
+        template='plotly_white',
+        height=600,
+        width=1200
+    )
 
     return fig

@@ -138,9 +138,136 @@ monthly_stats = funct.get_monthly_avg_of_daily_extremes(df, year_months)
 #)
 
 
-fig = plot.create_peak_calendar_from_percentiles(
-    df=df,
-    percentiles_df=percentile_years,
-    percentile_threshold=99,
-    output_file="peak_calendar_percentiles.html"
-)
+#fig = plot.create_peak_calendar_from_percentiles(
+#    df=df,
+#    percentiles_df=percentile_years,
+#    percentile_threshold=99,
+#    output_file="peak_calendar_percentiles.html"
+#)
+
+#######################################################################################################################
+# Create Model #
+#######################################################################################################################
+
+print("\n" + "=" * 70)
+print("Engineering Features for ML Model")
+print("=" * 70)
+
+df_features = funct.engineer_features(df)
+df_features = df_features.drop_nulls()
+
+print(f"Features engineered. Shape: {df_features.shape}")
+print(f"Columns: {df_features.columns}")
+
+trained_models = {}
+
+print("\n" + "=" * 70)
+print("Training Models for Each Zone")
+print("=" * 70)
+
+for zone in zones:
+    df_zone = df_features.filter(pl.col("zone") == zone)
+    trained_models[zone] = funct.train_zone_model(df_zone, zone)
+
+target_year = 2026
+predictions_all = []
+
+for month in range(1, 2):
+    month_name = datetime(target_year, month, 1).strftime('%B %Y')
+    print(f"\nPredicting {month_name}...")
+
+    for zone in zones:
+        try:
+            pred_df = funct.predict_month(
+                zone=zone,
+                month=month,
+                year_to_predict=target_year,
+                df_input=df_features,
+                model_dict=trained_models[zone],
+                percentile_data=None
+            )
+
+            if pred_df is not None and pred_df.shape[0] > 0:
+                predictions_all.append(pred_df)
+                print(f"  {zone}: {pred_df.shape[0]} predictions")
+            else:
+                print(f"  {zone}: No predictions generated")
+        except Exception as e:
+            print(f"  {zone}: Error - {str(e)}")
+            continue
+
+# Combine all predictions
+if len(predictions_all) > 0:
+    predictions_combined = pl.concat(predictions_all)
+    print(f"\nTotal predictions generated: {predictions_combined.shape[0]}")
+    print(f"Columns: {predictions_combined.columns}")
+    print(f"\nFirst 24 rows (first day):")
+    print(predictions_combined.head(24))
+
+    # Save predictions
+    predictions_combined.write_csv(f"predict/data/predictions_{target_year}.csv")
+    print(f"\nPredictions saved to predictions_{target_year}.csv")
+else:
+    print("ERROR: No predictions were generated!")
+    predictions_combined = None
+
+if predictions_combined is not None and predictions_combined.shape[0] > 0:
+    print("\n" + "=" * 70)
+    print("Creating Visualizations")
+    print("=" * 70)
+
+    # Create predictions for all zones in January
+    for zone in zones:
+        try:
+            fig = plot.create_prediction_figure(predictions_combined, month=1, year=2026, zone=zone)
+            if fig is not None:
+                filename = f"prediction_jan_2026_{zone.replace(' ', '_').replace('(', '').replace(')', '').lower()}.html"
+                fig.write_html("predict/figs/" + filename)
+                print(f"Saved: {filename}")
+        except Exception as e:
+            print(f"Error creating figure for {zone}: {str(e)}")
+
+    # Create a summary figure for all zones
+    print("\nCreating summary figure...")
+    try:
+        fig_summary = go.Figure()
+
+        for zone in zones:
+            pred_zone = predictions_combined.filter(
+                (pl.col("zone") == zone) &
+                (pl.col("timestamp").dt.month() == 1) &
+                (pl.col("timestamp").dt.year() == 2026)
+            )
+
+            if pred_zone.shape[0] > 0:
+                timestamps = pred_zone.select("timestamp").to_series().to_list()
+                predicted_mw = pred_zone.select("predicted_mw").to_series().to_list()
+
+                fig_summary.add_trace(go.Scatter(
+                    x=timestamps,
+                    y=predicted_mw,
+                    mode='lines',
+                    name=zone,
+                    line=dict(width=2)
+                ))
+
+        fig_summary.update_layout(
+            title="Predicted MW Usage - All Zones - January 2026",
+            xaxis_title="Date",
+            yaxis_title="Megawatts",
+            hovermode='x unified',
+            template='plotly_white',
+            height=600,
+            width=1200
+        )
+
+        fig_summary.write_html("prediction_jan_2026_all_zones.html")
+        print("Saved: prediction_jan_2026_all_zones.html")
+    except Exception as e:
+        print(f"Error creating summary figure: {str(e)}")
+
+    print("\n" + "=" * 70)
+    print("Prediction visualizations saved!")
+    print("=" * 70)
+else:
+    print("ERROR: Cannot create visualizations - no predictions available")
