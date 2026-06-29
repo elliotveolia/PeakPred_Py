@@ -391,15 +391,13 @@ def train_zone_model_with_weather(df_zone, zone_name, test_size=0.2):
     """
     print(f"\nTraining model for {zone_name}...")
 
-    # DEBUG: Check data before training
-    print(f"  Input data shape: {df_zone.shape}")
-    print(f"  Null counts:")
+
     for col in df_zone.columns:
         null_count = df_zone.select(col).null_count().item()
         if null_count > 0:
             print(f"    {col}: {null_count} nulls")
 
-    # Feature columns - INCLUDING TEMPERATURE
+    # Feature columns
     feature_cols = [
         # Temporal features
         'hour', 'dayofweek', 'is_weekend', 'month', 'day',
@@ -454,8 +452,8 @@ def train_zone_model_with_weather(df_zone, zone_name, test_size=0.2):
 
     # Train model
     model = XGBRegressor(
-        n_estimators=300,
-        max_depth=8,
+        n_estimators=500,
+        max_depth=10,
         learning_rate=0.05,
         subsample=0.8,
         colsample_bytree=0.8,

@@ -9,7 +9,7 @@ import inspect
 import plotly.subplots as sp
 
 from ice_data_py import cds, hist3
-from datetime import datetime
+from datetime import datetime, date
 
 from scipy.constants import year
 from datetime import datetime, timedelta
@@ -135,6 +135,7 @@ aggregate_percentiles = funct.aggregate_percentiles_by_month(percentile_years)
 monthly_stats = funct.get_monthly_avg_of_daily_extremes(df, year_months)
 
 load_file = False
+target_year = 2026
 
 if load_file:
     #######################################################################################################################
@@ -145,7 +146,6 @@ if load_file:
     print("Loading Predictions from File")
     print("=" * 70)
 
-    target_year = 2026
     predictions_file = f"predict/data/predictions_{target_year}.csv"
 
     try:
@@ -323,109 +323,238 @@ else:
     #######################################################################################################################
 
     if predictions_combined is not None and predictions_combined.shape[0] > 0:
-        print("\n" + "=" * 70)
-        print("Calculating Total Zone Predictions")
-        print("=" * 70)
+        # Check if Total zone already exists
+        existing_zones = predictions_combined.select('zone').unique().to_series().to_list()
 
-        total_predictions = []
+        if 'Total (NH+CT+WMass)' not in existing_zones:
+            print("\n" + "=" * 70)
+            print("Calculating Total Zone Predictions")
+            print("=" * 70)
 
-        for month in range(1, 7):
-            days_in_month = calendar.monthrange(target_year, month)[1]
+            total_predictions = []
 
-            for day in range(1, days_in_month + 1):
-                for hour in range(24):
-                    try:
-                        pred_date = datetime(target_year, month, day)
+            # Get all unique timestamps
+            timestamps = predictions_combined.select("timestamp").unique().sort("timestamp").to_series().to_list()
 
-                        # Get predictions for each individual zone
-                        ct_pred = predictions_combined.filter(
-                            (pl.col("zone") == "Connecticut") &
-                            (pl.col("timestamp").dt.date() == pred_date.date()) &
-                            (pl.col("timestamp").dt.hour() == hour)
-                        )
+            for ts in timestamps:
+                try:
+                    # Get predictions for each individual zone at this timestamp
+                    ct_pred = predictions_combined.filter(
+                        (pl.col("zone") == "Connecticut") &
+                        (pl.col("timestamp") == ts)
+                    )
 
-                        wm_pred = predictions_combined.filter(
-                            (pl.col("zone") == "Western Mass") &
-                            (pl.col("timestamp").dt.date() == pred_date.date()) &
-                            (pl.col("timestamp").dt.hour() == hour)
-                        )
+                    wm_pred = predictions_combined.filter(
+                        (pl.col("zone") == "Western Mass") &
+                        (pl.col("timestamp") == ts)
+                    )
 
-                        nh_pred = predictions_combined.filter(
-                            (pl.col("zone") == "New Hampshire") &
-                            (pl.col("timestamp").dt.date() == pred_date.date()) &
-                            (pl.col("timestamp").dt.hour() == hour)
-                        )
+                    nh_pred = predictions_combined.filter(
+                        (pl.col("zone") == "New Hampshire") &
+                        (pl.col("timestamp") == ts)
+                    )
 
-                        # Sum if all three zones have predictions
-                        if ct_pred.shape[0] > 0 and wm_pred.shape[0] > 0 and nh_pred.shape[0] > 0:
-                            ct_mw = ct_pred.select("predicted_mw").item()
-                            wm_mw = wm_pred.select("predicted_mw").item()
-                            nh_mw = nh_pred.select("predicted_mw").item()
-                            total_mw = ct_mw + wm_mw + nh_mw
+                    # Sum if all three zones have predictions
+                    if ct_pred.shape[0] > 0 and wm_pred.shape[0] > 0 and nh_pred.shape[0] > 0:
+                        ct_mw = ct_pred.select("predicted_mw").item()
+                        wm_mw = wm_pred.select("predicted_mw").item()
+                        nh_mw = nh_pred.select("predicted_mw").item()
+                        total_mw = ct_mw + wm_mw + nh_mw
 
-                            # Sum percentiles and historical bounds
-                            p10 = (ct_pred.select("p10").item() + wm_pred.select("p10").item() + nh_pred.select(
-                                "p10").item())
-                            p25 = (ct_pred.select("p25").item() + wm_pred.select("p25").item() + nh_pred.select(
-                                "p25").item())
-                            p75 = (ct_pred.select("p75").item() + wm_pred.select("p75").item() + nh_pred.select(
-                                "p75").item())
-                            p90 = (ct_pred.select("p90").item() + wm_pred.select("p90").item() + nh_pred.select(
-                                "p90").item())
-                            hist_avg = (ct_pred.select("historical_avg").item() + wm_pred.select(
-                                "historical_avg").item() + nh_pred.select("historical_avg").item())
-                            hist_min = (ct_pred.select("historical_min").item() + wm_pred.select(
-                                "historical_min").item() + nh_pred.select("historical_min").item())
-                            hist_max = (ct_pred.select("historical_max").item() + wm_pred.select(
-                                "historical_max").item() + nh_pred.select("historical_max").item())
+                        # Sum percentiles and historical bounds
+                        p10 = ct_pred.select("p10").item() + wm_pred.select("p10").item() + nh_pred.select("p10").item()
+                        p25 = ct_pred.select("p25").item() + wm_pred.select("p25").item() + nh_pred.select("p25").item()
+                        p75 = ct_pred.select("p75").item() + wm_pred.select("p75").item() + nh_pred.select("p75").item()
+                        p90 = ct_pred.select("p90").item() + wm_pred.select("p90").item() + nh_pred.select("p90").item()
+                        hist_avg = ct_pred.select("historical_avg").item() + wm_pred.select(
+                            "historical_avg").item() + nh_pred.select("historical_avg").item()
+                        hist_min = ct_pred.select("historical_min").item() + wm_pred.select(
+                            "historical_min").item() + nh_pred.select("historical_min").item()
+                        hist_max = ct_pred.select("historical_max").item() + wm_pred.select(
+                            "historical_max").item() + nh_pred.select("historical_max").item()
 
-                            total_predictions.append({
-                                'timestamp': pred_date.replace(hour=hour),
-                                'zone': 'Total (NH+CT+WMass)',
-                                'hour': hour,
-                                'day': day,
-                                'predicted_mw': float(total_mw),
-                                'p10': float(p10),
-                                'p25': float(p25),
-                                'p75': float(p75),
-                                'p90': float(p90),
-                                'historical_min': float(hist_min),
-                                'historical_max': float(hist_max),
-                                'historical_avg': float(hist_avg),
-                                'temperature_used': 0.0,
-                                'temp_source': 'calculated',
-                                'temp_adjustment_factor': 1.0,
-                            })
-                    except Exception as e:
-                        continue
+                        # PRESERVE TEMPERATURE DATA - Average across zones
+                        ct_temp = ct_pred.select("temperature_used").item()
+                        wm_temp = wm_pred.select("temperature_used").item()
+                        nh_temp = nh_pred.select("temperature_used").item()
+                        avg_temp = (ct_temp + wm_temp + nh_temp) / 3
 
-        # Add Total zone predictions to combined dataframe
-        if total_predictions:
-            total_df = pl.DataFrame(total_predictions)
-            predictions_combined = pl.concat([predictions_combined, total_df])
-            print(f"✓ Total zone calculated: {total_df.shape[0]} predictions")
+                        # Use the most common temp_source
+                        temp_sources = [
+                            ct_pred.select("temp_source").item(),
+                            wm_pred.select("temp_source").item(),
+                            nh_pred.select("temp_source").item()
+                        ]
+                        temp_source = max(set(temp_sources), key=temp_sources.count)
+
+                        # Average adjustment factors
+                        ct_adj = ct_pred.select("temp_adjustment_factor").item()
+                        wm_adj = wm_pred.select("temp_adjustment_factor").item()
+                        nh_adj = nh_pred.select("temp_adjustment_factor").item()
+                        avg_adj = (ct_adj + wm_adj + nh_adj) / 3
+
+                        total_predictions.append({
+                            'timestamp': ts,
+                            'zone': 'Total (NH+CT+WMass)',
+                            'hour': ct_pred.select("hour").item(),
+                            'day': ct_pred.select("day").item(),
+                            'predicted_mw': float(total_mw),
+                            'p10': float(p10),
+                            'p25': float(p25),
+                            'p75': float(p75),
+                            'p90': float(p90),
+                            'historical_min': float(hist_min),
+                            'historical_max': float(hist_max),
+                            'historical_avg': float(hist_avg),
+                            'temperature_used': float(avg_temp),  # PRESERVE TEMPERATURE
+                            'temp_source': temp_source,  # PRESERVE SOURCE
+                            'temp_adjustment_factor': float(avg_adj),  # PRESERVE ADJUSTMENT
+                        })
+                except Exception as e:
+                    continue
+
+            # Add Total zone predictions to combined dataframe
+            if total_predictions:
+                total_df = pl.DataFrame(total_predictions)
+                predictions_combined = pl.concat([predictions_combined, total_df])
+                print(f"Total zone calculated: {total_df.shape[0]} predictions")
+            else:
+                print("Failed to calculate Total zone")
+        else:
+            print("\nTotal zone already exists in predictions")
+
 
 #######################################################################################################################
 # Create Visualizations #
 #######################################################################################################################
 
 if predictions_combined is not None and predictions_combined.shape[0] > 0:
-    print("\n" + "=" * 70)
-    print("Creating Visualizations")
-    print("=" * 70)
+    # Check if Total zone already exists
+    existing_zones = predictions_combined.select('zone').unique().to_series().to_list()
 
-    # Configuration: Change these to select which months to visualize
-    VISUALIZATION_MONTHS = [1, 2, 3, 4, 5, 6]
+    if 'Total (NH+CT+WMass)' not in existing_zones:
+        print("\n" + "=" * 70)
+        print("Calculating Total Zone Predictions")
+        print("=" * 70)
 
-    zones_for_viz = ["Connecticut", "Western Mass", "New Hampshire", "Total (NH+CT+WMass)"]
+        total_predictions = []
 
-    for month in VISUALIZATION_MONTHS:
-        plot.create_all_visualizations(
-            predictions_df=predictions_combined,
-            month=month,
-            year=target_year,
-            zones=zones_for_viz,
-            output_dir="predict/figs/"
-        )
+        # Get all unique timestamps
+        timestamps = predictions_combined.select("timestamp").unique().sort("timestamp").to_series().to_list()
+
+        for ts in timestamps:
+            try:
+                # Get predictions for each individual zone at this timestamp
+                ct_pred = predictions_combined.filter(
+                    (pl.col("zone") == "Connecticut") &
+                    (pl.col("timestamp") == ts)
+                )
+
+                wm_pred = predictions_combined.filter(
+                    (pl.col("zone") == "Western Mass") &
+                    (pl.col("timestamp") == ts)
+                )
+
+                nh_pred = predictions_combined.filter(
+                    (pl.col("zone") == "New Hampshire") &
+                    (pl.col("timestamp") == ts)
+                )
+
+                # Sum if all three zones have predictions
+                if ct_pred.shape[0] > 0 and wm_pred.shape[0] > 0 and nh_pred.shape[0] > 0:
+                    ct_mw = ct_pred.select("predicted_mw").item()
+                    wm_mw = wm_pred.select("predicted_mw").item()
+                    nh_mw = nh_pred.select("predicted_mw").item()
+                    total_mw = ct_mw + wm_mw + nh_mw
+
+                    # Sum percentiles and historical bounds
+                    p10 = ct_pred.select("p10").item() + wm_pred.select("p10").item() + nh_pred.select("p10").item()
+                    p25 = ct_pred.select("p25").item() + wm_pred.select("p25").item() + nh_pred.select("p25").item()
+                    p75 = ct_pred.select("p75").item() + wm_pred.select("p75").item() + nh_pred.select("p75").item()
+                    p90 = ct_pred.select("p90").item() + wm_pred.select("p90").item() + nh_pred.select("p90").item()
+                    hist_avg = ct_pred.select("historical_avg").item() + wm_pred.select("historical_avg").item() + nh_pred.select("historical_avg").item()
+                    hist_min = ct_pred.select("historical_min").item() + wm_pred.select("historical_min").item() + nh_pred.select("historical_min").item()
+                    hist_max = ct_pred.select("historical_max").item() + wm_pred.select("historical_max").item() + nh_pred.select("historical_max").item()
+
+                    total_predictions.append({
+                        'timestamp': ts,
+                        'zone': 'Total (NH+CT+WMass)',
+                        'hour': ct_pred.select("hour").item(),
+                        'day': ct_pred.select("day").item(),
+                        'predicted_mw': float(total_mw),
+                        'p10': float(p10),
+                        'p25': float(p25),
+                        'p75': float(p75),
+                        'p90': float(p90),
+                        'historical_min': float(hist_min),
+                        'historical_max': float(hist_max),
+                        'historical_avg': float(hist_avg),
+                        'temperature_used': 0.0,
+                        'temp_source': 'calculated',
+                        'temp_adjustment_factor': 1.0,
+                    })
+            except Exception as e:
+                continue
+
+        # Add Total zone predictions to combined dataframe
+        if total_predictions:
+            total_df = pl.DataFrame(total_predictions)
+            predictions_combined = pl.concat([predictions_combined, total_df])
+            print(f"Total zone calculated: {total_df.shape[0]} predictions")
+        else:
+            print("Failed to calculate Total zone")
+    else:
+        print("\nTotal zone already exists in predictions")
+
+print("\n" + "=" * 70)
+print("APRIL ANALYSIS - Why April 16 not April 8?")
+print("=" * 70)
+
+# Historical April data
+april_hist = df.filter(
+    (pl.col("month") == 4) &
+    (pl.col("zone") == "Total (NH+CT+WMass)")
+).group_by(pl.col("timestamp").dt.date().alias("date")).agg(
+    pl.col("value").mean().alias("avg_mw"),
+    pl.col("temperature").mean().alias("avg_temp"),
+    pl.col("temperature").min().alias("min_temp"),
+).sort("avg_mw", descending=True)
+
+print("\nHistorical April Top 10 Peak Days:")
+for i, row in enumerate(april_hist.head(10).to_dicts(), 1):
+    print(f"  {i}. {row['date']}: {row['avg_mw']:.0f} MW @ {row['avg_temp']:.1f}°F (min: {row['min_temp']:.1f}°F)")
+
+# 2026 April predictions
+april_2026 = predictions_combined.filter(
+    (pl.col("timestamp").dt.month() == 4) &
+    (pl.col("timestamp").dt.year() == 2026) &
+    (pl.col("zone") == "Total (NH+CT+WMass)")
+).group_by(pl.col("timestamp").dt.date().alias("date")).agg(
+    pl.col("predicted_mw").mean().alias("predicted_mw"),
+    pl.col("temperature_used").mean().alias("temp"),
+).sort("predicted_mw", descending=True)
+
+print("\n2026 April Predicted Top 10 Days:")
+for i, row in enumerate(april_2026.head(10).to_dicts(), 1):
+    print(f"  {i}. {row['date']}: {row['predicted_mw']:.0f} MW @ {row['temp']:.1f}°F")
+
+# Specifically check April 8 vs April 16
+print("\nComparison:")
+april_8_pred = april_2026.filter(pl.col("date") == date(2026, 4, 8)).to_dicts()
+april_16_pred = april_2026.filter(pl.col("date") == date(2026, 4, 16)).to_dicts()
+
+if april_8_pred:
+    print(f"  Apr 8, 2026: {april_8_pred[0]['predicted_mw']:.0f} MW @ {april_8_pred[0]['temp']:.1f}°F")
 else:
-    print("\nERROR: Cannot create visualizations - no predictions available")
+    print(f"  Apr 8, 2026: No data")
+
+if april_16_pred:
+    print(f"  Apr 16, 2026: {april_16_pred[0]['predicted_mw']:.0f} MW @ {april_16_pred[0]['temp']:.1f}°F")
+else:
+    print(f"  Apr 16, 2026: No data")
+
+# Show all April days sorted by date
+print("\nAll April 2026 Days (sorted by date):")
+april_all = april_2026.sort("date").to_dicts()
+for row in april_all:
+    print(f"  {row['date']}: {row['predicted_mw']:.0f} MW @ {row['temp']:.1f}°F")
