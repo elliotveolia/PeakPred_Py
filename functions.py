@@ -72,27 +72,59 @@ def process_zone_data_with_dewpoint(demand_df, temp_df, dewpoint_df, zone_name):
     # Standardize dewpoint column names
     dewpoint_df = dewpoint_df.rename({dewpoint_df.columns[1]: "dewpoint"})
 
-    # Standardize timestamps and convert from UTC to Eastern Time
-    demand_col = demand_df.columns[0]
-    demand_df = demand_df.with_columns(
-        pl.col(demand_col).cast(pl.Datetime("ms", "UTC")).dt.convert_time_zone("America/New_York").alias("timestamp")
-    )
-    if demand_col != "timestamp":
-        demand_df = demand_df.drop(demand_col)
+    timezone = True
 
-    temp_col = temp_df.columns[0]
-    temp_df = temp_df.with_columns(
-        pl.col(temp_col).cast(pl.Datetime("ms", "UTC")).dt.convert_time_zone("America/New_York").alias("timestamp")
-    )
-    if temp_col != "timestamp":
-        temp_df = temp_df.drop(temp_col)
+    if timezone:
 
-    dewpoint_col = dewpoint_df.columns[0]
-    dewpoint_df = dewpoint_df.with_columns(
-        pl.col(dewpoint_col).cast(pl.Datetime("ms", "UTC")).dt.convert_time_zone("America/New_York").alias("timestamp")
-    )
-    if dewpoint_col != "timestamp":
-        dewpoint_df = dewpoint_df.drop(dewpoint_col)
+        # Standardize timestamps and convert from UTC to Eastern Time
+        demand_col = demand_df.columns[0]
+        demand_df = demand_df.with_columns(
+            pl.col(demand_col).cast(pl.Datetime("ms", "UTC")).dt.convert_time_zone("America/New_York").alias("timestamp")
+        )
+        if demand_col != "timestamp":
+            demand_df = demand_df.drop(demand_col)
+
+        temp_col = temp_df.columns[0]
+        temp_df = temp_df.with_columns(
+            pl.col(temp_col).cast(pl.Datetime("ms", "UTC")).dt.convert_time_zone("America/New_York").alias("timestamp")
+        )
+        if temp_col != "timestamp":
+            temp_df = temp_df.drop(temp_col)
+
+        dewpoint_col = dewpoint_df.columns[0]
+        dewpoint_df = dewpoint_df.with_columns(
+            pl.col(dewpoint_col).cast(pl.Datetime("ms", "UTC")).dt.convert_time_zone("America/New_York").alias("timestamp")
+        )
+        if dewpoint_col != "timestamp":
+            dewpoint_df = dewpoint_df.drop(dewpoint_col)
+
+    else:
+
+        # Standardize dewpoint column names
+        dewpoint_df = dewpoint_df.rename({dewpoint_df.columns[1]: "dewpoint"})
+
+        # Standardize timestamps (no timezone conversion)
+        demand_col = demand_df.columns[0]
+        demand_df = demand_df.with_columns(
+            pl.col(demand_col).cast(pl.Datetime).alias("timestamp")
+        )
+        if demand_col != "timestamp":
+            demand_df = demand_df.drop(demand_col)
+
+        temp_col = temp_df.columns[0]
+        temp_df = temp_df.with_columns(
+            pl.col(temp_col).cast(pl.Datetime).alias("timestamp")
+        )
+        if temp_col != "timestamp":
+            temp_df = temp_df.drop(temp_col)
+
+        dewpoint_col = dewpoint_df.columns[0]
+        dewpoint_df = dewpoint_df.with_columns(
+            pl.col(dewpoint_col).cast(pl.Datetime).alias("timestamp")
+        )
+        if dewpoint_col != "timestamp":
+            dewpoint_df = dewpoint_df.drop(dewpoint_col)
+
 
     # Join demand with temperature and dewpoint
     zone_data = demand_df.join(
