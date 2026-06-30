@@ -1117,8 +1117,8 @@ def create_prediction_figure(predictions_df, month, year, zone):
         yaxis_title="Megawatts",
         hovermode='x unified',
         template='plotly_white',
-        height=600,
-        width=1200
+        height=1000,
+        width=2400
     )
 
     return fig
