@@ -47,7 +47,8 @@ class PeakPredictor:
         today = t_now.date()
         today_plus7 = today + timedelta(days=7)
 
-        # Calculate time range
+        # IMPORTANT: Fetch from beginning of month to today+7
+        # This ensures max_peak includes all data from the month so far
         t_from = datetime(today.year, today.month, 1, 0, 0, 0)
         t_to = datetime(today_plus7.year, today_plus7.month, today_plus7.day, 0, 0, 0)
 
@@ -85,7 +86,7 @@ class PeakPredictor:
 
     def find_max(self, df, at_time):
         """
-        Find maximum peak and calculate predicted peak strength
+        Find maximum peak and calculate predicted peak strength based on both actual and forecast
 
         Args:
             df: Polars DataFrame with load and forecast data
@@ -109,33 +110,30 @@ class PeakPredictor:
             print("Warning: All forecast_3day_mw values are null")
             return df
 
-        next_hour = at_time + timedelta(hours=1)
         today = at_time.date()
         today_midnight = datetime(today.year, today.month, today.day, 0, 0, 0)
+        next_hour = at_time + timedelta(hours=1)
 
         # Convert to Polars datetime with timezone for comparison
         tz = pytz.timezone(TIMEZONE)
         today_midnight_tz = tz.localize(today_midnight)
         next_hour_tz = tz.localize(next_hour)
-        end_dt_7day = add_upto_end_of_month(at_time, 7)
-        end_dt_7day_tz = tz.localize(end_dt_7day)
-        at_time_tz = tz.localize(at_time)
 
-        # Get max peak so far (up to today midnight)
+        # Get max actual load so far (up to today midnight)
+        # This includes ALL data from beginning of month up to today
         df_up_to_today = df.filter(pl.col('datetime') <= pl.lit(today_midnight_tz))
-        max_peak_so_far = df_up_to_today['load_mw'].max() if df_up_to_today.height > 0 else None
+        max_actual_load = df_up_to_today['load_mw'].max() if df_up_to_today.height > 0 else 0
 
         # Get init peak (if column exists)
-        init_peak_mw = None
+        init_peak_mw = 0
         if 'init_peak_mw' in df.columns:
-            init_peak_mw = df_up_to_today['init_peak_mw'].max() if df_up_to_today.height > 0 else None
+            init_peak_mw = df_up_to_today['init_peak_mw'].max() if df_up_to_today.height > 0 else 0
 
-        # Get 7-day forecast max
-        df_7day = df.filter((pl.col('datetime') >= pl.lit(at_time_tz)) & (pl.col('datetime') < pl.lit(end_dt_7day_tz)))
-        max_7day_predicted_peak = df_7day['forecast_3day_mw'].max() if df_7day.height > 0 else None
+        # Get max forecast in entire dataset (to know what's predicted)
+        max_forecast = df['forecast_3day_mw'].max() if df.height > 0 else 0
 
-        # Calculate max peak - filter out None values
-        peak_values = [v for v in [max_peak_so_far, init_peak_mw, max_7day_predicted_peak] if v is not None]
+        # The target peak is the maximum of: actual load so far, init peak, or max forecast
+        peak_values = [v for v in [max_actual_load, init_peak_mw, max_forecast] if v is not None and v > 0]
 
         if not peak_values:
             print("Warning: No peak values found")
@@ -143,7 +141,7 @@ class PeakPredictor:
 
         max_peak = max(peak_values)
 
-        print(f"Max Peak: {max_peak}")
+        print(f"Max Peak: {max_peak} (actual: {max_actual_load}, init: {init_peak_mw}, forecast: {max_forecast})")
 
         # Filter to future hours
         df = df.filter(pl.col('datetime') >= pl.lit(next_hour_tz))
@@ -151,18 +149,40 @@ class PeakPredictor:
         if df.is_empty():
             return df
 
-        # Calculate predicted peak difference and strength
+        # Calculate distance from peak for BOTH actual load and forecast
         df = df.with_columns([
-            (pl.lit(max_peak) - pl.col('forecast_3day_mw')).alias('predicted_peak_diff_mw'),
+            (pl.lit(max_peak) - pl.col('load_mw')).alias('actual_peak_diff_mw'),
+            (pl.lit(max_peak) - pl.col('forecast_3day_mw')).alias('forecast_peak_diff_mw'),
         ])
 
+        # Calculate peak strength for actual load
         df = df.with_columns([
-            pl.when(pl.col('predicted_peak_diff_mw') <= 0)
-            .then(1.0)
-            .otherwise(1.0 - (pl.col('predicted_peak_diff_mw') / self.threshold_mw))
+            pl.when(pl.col('actual_peak_diff_mw') <= 0)
+            .then(1.0)  # Actual load >= max_peak
+            .when(pl.col('actual_peak_diff_mw') >= self.threshold_mw)
+            .then(0.0)  # Actual load is threshold_mw below max_peak
+            .otherwise(1.0 - (pl.col('actual_peak_diff_mw') / self.threshold_mw))
+            .alias('actual_peak_strength')
+        ])
+
+        # Calculate peak strength for forecast
+        df = df.with_columns([
+            pl.when(pl.col('forecast_peak_diff_mw') <= 0)
+            .then(1.0)  # Forecast >= max_peak
+            .when(pl.col('forecast_peak_diff_mw') >= self.threshold_mw)
+            .then(0.0)  # Forecast is threshold_mw below max_peak
+            .otherwise(1.0 - (pl.col('forecast_peak_diff_mw') / self.threshold_mw))
+            .alias('forecast_peak_strength')
+        ])
+
+        # Take the MAXIMUM of actual and forecast strength
+        # This way, if either one is close to peak, it shows as a peak signal
+        df = df.with_columns([
+            pl.max_horizontal('actual_peak_strength', 'forecast_peak_strength')
             .alias('predicted_peak_strength')
         ])
 
+        # Actionable strength
         df = df.with_columns([
             pl.when(pl.col('predicted_peak_strength') > 0)
             .then(pl.col('predicted_peak_strength'))

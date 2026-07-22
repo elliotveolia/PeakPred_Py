@@ -73,7 +73,7 @@ for month in months:
         y=peak_predict_month['predicted_peak_strength_actionable'],
         mode='lines',
         name=f'Peak Strength - {month}',
-        line=dict(color='blue', width=2),
+        line=dict(color='blue', width=1),
         yaxis='y2',
         visible=(month == months[0]),
         legendgroup=month
