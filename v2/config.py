@@ -25,7 +25,7 @@ DATA_SOURCES = {
 # Peak prediction parameters
 PEAK_PREDICT_PARAMS = {
     "zone": "Eversource",
-    "threshold_mw": 50,
+    "threshold_mw": 10,
     "derate_7day_forecast": 0.97
 }
 
