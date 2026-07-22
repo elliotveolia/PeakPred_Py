@@ -191,7 +191,7 @@ if __name__ == "__main__":
     
     # Define date range - using 2024 data
     t1 = datetime(2024, 1, 1)
-    t2 = datetime(2024, 2, 28)
+    t2 = datetime(2024, 6, 30)
     
     # Run analysis
     runner.run_all(t1, t2)
