@@ -19,6 +19,16 @@ DATA_SOURCES = {
         "ms": "Eversource",
         "mn": "WMECo.peak_detect.v2",
         "mp": "init_peak_mw"
+    },
+    "temperature": {
+        "ms": "NOAA-Forecast",
+        "mn": "MA-Worcester",
+        "mp": "temperature[degF]"
+    },
+    "apparent_temperature": {
+        "ms": "NOAA-Forecast",
+        "mn": "MA-Worcester",
+        "mp": "apparentTemperature[degF]"
     }
 }
 

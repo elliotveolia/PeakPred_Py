@@ -12,8 +12,12 @@ from config import (
 )
 from init_peak_finder import InitPeakFinder
 from peak_predictor import PeakPredictor
+from peak_predictor_v2 import PeakPredictorV2
 from helper import fetch_df
 from ice_data_py import cds
+
+pv2 = True
+
 
 
 class PeakAnalysisRunner:
@@ -28,11 +32,18 @@ class PeakAnalysisRunner:
             alpha=INIT_PEAK_FINDER_PARAMS['default_alpha'],
             lookback_years=INIT_PEAK_FINDER_PARAMS['lookback_years']
         )
-        self.peak_predictor = PeakPredictor(
-            zone=PEAK_PREDICT_PARAMS['zone'],
-            threshold_mw=PEAK_PREDICT_PARAMS['threshold_mw'],
-            derate_7day_forecast=PEAK_PREDICT_PARAMS['derate_7day_forecast']
-        )
+        if pv2:
+            self.peak_predictor = PeakPredictorV2(
+                zone=PEAK_PREDICT_PARAMS['zone'],
+                threshold_mw=PEAK_PREDICT_PARAMS['threshold_mw'],
+                derate_7day_forecast=PEAK_PREDICT_PARAMS['derate_7day_forecast']
+            )
+        else:
+            self.peak_predictor = PeakPredictor(
+                zone=PEAK_PREDICT_PARAMS['zone'],
+                threshold_mw=PEAK_PREDICT_PARAMS['threshold_mw'],
+                derate_7day_forecast=PEAK_PREDICT_PARAMS['derate_7day_forecast']
+            )
         
         # Create output directory if it doesn't exist
         os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -191,7 +202,7 @@ if __name__ == "__main__":
     
     # Define date range - using 2024 data
     t1 = datetime(2024, 1, 1)
-    t2 = datetime(2024, 6, 30)
+    t2 = datetime(2024, 3, 30)
     
     # Run analysis
     runner.run_all(t1, t2)
