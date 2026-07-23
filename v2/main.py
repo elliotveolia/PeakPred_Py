@@ -13,10 +13,10 @@ from config import (
 from init_peak_finder import InitPeakFinder
 from peak_predictor import PeakPredictor
 from peak_predictor_v2 import PeakPredictorV2
+from peak_predictor_v3 import PeakPredictorV3
 from helper import fetch_df
 from ice_data_py import cds
 
-pv2 = True
 
 
 
@@ -32,18 +32,12 @@ class PeakAnalysisRunner:
             alpha=INIT_PEAK_FINDER_PARAMS['default_alpha'],
             lookback_years=INIT_PEAK_FINDER_PARAMS['lookback_years']
         )
-        if pv2:
-            self.peak_predictor = PeakPredictorV2(
+
+        self.peak_predictor = PeakPredictorV3(
                 zone=PEAK_PREDICT_PARAMS['zone'],
                 threshold_mw=PEAK_PREDICT_PARAMS['threshold_mw'],
                 derate_7day_forecast=PEAK_PREDICT_PARAMS['derate_7day_forecast']
-            )
-        else:
-            self.peak_predictor = PeakPredictor(
-                zone=PEAK_PREDICT_PARAMS['zone'],
-                threshold_mw=PEAK_PREDICT_PARAMS['threshold_mw'],
-                derate_7day_forecast=PEAK_PREDICT_PARAMS['derate_7day_forecast']
-            )
+        )
         
         # Create output directory if it doesn't exist
         os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -73,20 +67,29 @@ class PeakAnalysisRunner:
             print(f"Processing date: {current_date}")
             
             result = self.init_peak_finder.run(DATA_SOURCES, current_datetime, self.cds)
-            
+
             results.append({
                 'date': current_date,
                 'timestamp': result['timestamp'],
                 'month': result['month'],
-                'n95': result['n95'],
-                'current_year_max': result['current_year_max'],
-                'historical_min': result['historical_min'],
-                'init_peak': result['init_peak']
+                'n95': float(result['n95']) if result['n95'] is not None else None,
+                'current_year_max': float(result['current_year_max']) if result[
+                                                                             'current_year_max'] is not None else None,
+                'historical_min': float(result['historical_min']) if result['historical_min'] is not None else None,
+                'init_peak': float(result['init_peak']) if result['init_peak'] is not None else None
             })
             
             current_date += timedelta(days=1)
-        
-        results_df = pl.DataFrame(results)
+
+        results_df = pl.DataFrame(results, schema={
+            'date': pl.Date,
+            'timestamp': pl.Datetime,
+            'month': pl.Int64,
+            'n95': pl.Float64,
+            'current_year_max': pl.Float64,
+            'historical_min': pl.Float64,
+            'init_peak': pl.Float64
+        })
         
         # Save to CSV
         output_path = os.path.join(OUTPUT_DIR, OUTPUT_CSV_INIT_PEAK)
@@ -202,7 +205,7 @@ if __name__ == "__main__":
     
     # Define date range - using 2024 data
     t1 = datetime(2024, 1, 1)
-    t2 = datetime(2024, 3, 30)
+    t2 = datetime(2024, 7, 30)
     
     # Run analysis
     runner.run_all(t1, t2)
